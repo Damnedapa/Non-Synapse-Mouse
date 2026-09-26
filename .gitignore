@@ -1,0 +1,11 @@
+# Compilacion PyInstaller
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+
+# Configuracion local del usuario (se genera al ejecutar)
+razer_presets.json
