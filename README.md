@@ -3,9 +3,9 @@
 > 🌐 **[English](README.md)** · **[Español](README.es.md)**
 
 # Non-Synapse-Mouse
-![Non-Synapse-Mouse](https://i.imgur.com/zbB4Qv3.png)
+![Non-Synapse-Mouse](https://i.imgur.com/MfgLxiW.png)
 **A lightweight configuration tool for Razer mice — without Razer Synapse.**
-![Non-Synapse-Mouse](https://i.imgur.com/XJESuFA.png)
+
 Razer Synapse/Chroma takes up space, runs background services, eats RAM and needs
 an account and a connection — all for tasks as simple as changing the DPI.
 **Non-Synapse-Mouse** does that job by talking directly to the mouse over USB (the
