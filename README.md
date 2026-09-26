@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/32686073/README.md)
 # Non-Synapse-Mouse
 
 **Configurador ligero para ratones Razer, sin Razer Synapse.**
