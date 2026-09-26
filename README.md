@@ -236,7 +236,7 @@ Summary of milestones up to **v1.0.0** (first public release):
 | **v1.0.0** | Distribution: fixed paths for the `.exe`, GPL-3.0 license, documentation. |
 
 ### Ideas / roadmap
-- Native button remapping (requires Wireshark captures of Synapse).
+- Native button remapping 
 - Support for other brands (e.g. Pulsar, already reverse-engineered by the community).
 - More lighting effects (breathing, spectrum…).
 
