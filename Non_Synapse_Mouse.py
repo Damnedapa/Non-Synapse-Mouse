@@ -107,6 +107,7 @@ DEVICES = [
     {"name": "Razer Cobra",               "pids": {0x00A3: "cable"},                    "dpi_max": 8500,  "wireless": False, "tx": 0xFF},
     {"name": "Razer Mamba Elite",         "pids": {0x006C: "cable"},                    "dpi_max": 16000, "wireless": False, "tx": 0xFF},
     {"name": "Razer Orochi V2",           "pids": {0x0094: "dongle", 0x0095: "bt"},    "dpi_max": 18000, "wireless": True,  "tx": 0x1F},
+    {"name": "Razer Mouse Dock (Viper Ultimate)", "pids": {0x007E: "USB"}, "dpi_max": 0, "wireless": False, "tx": 0x3F, "led": 0x00, "lighting_only": True},
     {"name": "Auto-detectar (cualquier Razer)", "pids": None,                          "dpi_max": 30000, "wireless": True,  "tx": 0xFF},
 ]
 
@@ -179,6 +180,14 @@ class RazerMouse:
         self.model = None
         self.pid = None
         self.tx_cache = {}   # command_class -> transaction_id que funciona
+
+    @property
+    def lighting_only(self):
+        return bool(self.model and self.model.get("lighting_only", False))
+
+    def _require_mouse(self):
+        if self.lighting_only:
+            raise RuntimeError("La base de carga solo admite controles de iluminacion.")
 
     # --- transporte ------------------------------------------------------
     def _raw(self, dev, report, command_class, retries=5):
@@ -274,6 +283,9 @@ class RazerMouse:
             tx = self._probe_tx(d, 0x00)         # sondea firmware
             if tx is not None:
                 self.dev = d; self.pid = pid; self.tx_cache[0x00] = tx
+                if model["pids"] is None:
+                    self.model = next((item for item in DEVICES
+                                       if item["pids"] and pid in item["pids"]), model)
                 conn = ""
                 if model["pids"]:
                     conn = model["pids"].get(pid, "")
@@ -297,16 +309,19 @@ class RazerMouse:
         return r[8], r[9]     # major, minor
 
     def get_battery(self):
+        self._require_mouse()
         r = self._cmd(0x07, 0x80, 0x02)
         pct = round(r[9] / 255 * 100)
         c = self._cmd(0x07, 0x84, 0x02)
         return pct, bool(c[9])
 
     def get_dpi(self):
+        self._require_mouse()
         r = self._cmd(0x04, 0x85, 0x07, bytes([VARSTORE]))
         return (r[9] << 8) | r[10], (r[11] << 8) | r[12]
 
     def set_dpi(self, dpi_x, dpi_y=None, persist=True):
+        self._require_mouse()
         dpi_max = self.model["dpi_max"] if self.model else 30000
         dpi_y = dpi_x if dpi_y is None else dpi_y
         dpi_x = max(DPI_MIN, min(dpi_max, int(dpi_x)))
@@ -318,6 +333,7 @@ class RazerMouse:
         return r[0], (dpi_x, dpi_y)
 
     def set_poll_rate(self, hz):
+        self._require_mouse()
         if hz not in POLL_ARG:
             raise ValueError("La tasa debe ser 125, 500 o 1000 Hz.")
         r = self._cmd(0x00, 0x05, 0x01, bytes([POLL_ARG[hz]]))
@@ -331,11 +347,14 @@ class RazerMouse:
         if self.dev is None:
             raise RuntimeError("No conectado. Pulsa 'Detectar / Probar conexion'.")
         order = list(TX_LIGHT_CANDIDATES)
+        if self.model and self.model.get("lighting_only"):
+            order.insert(0, self.model["tx"])
         if 0x0F in self.tx_cache:
             order.insert(0, self.tx_cache[0x0F])
-        for tx in order:
+        for tx in dict.fromkeys(order):
             resp = self._raw(self.dev, build_report(0x0F, command_id, data_size, args, tx), 0x0F)
-            if resp and resp[6] == 0x0F and resp[0] != 0x05:   # 0x05 = no soportado
+            if (resp and len(resp) >= 8 and resp[6] == 0x0F
+                    and resp[7] == command_id and resp[0] == 0x02):
                 self.tx_cache[0x0F] = tx
                 return resp
         raise RuntimeError("El raton no acepto el comando de iluminacion.")
@@ -446,7 +465,7 @@ def run_gui():
             "btn_apply_active": "Aplicar a perfil activo",
             "chk_auto": "Seguimiento automático en primer plano",
             "chk_notify": "Aviso emergente al cambiar (sondea en 2º plano)",
-            "led_color_hdr": "Color del LED (logo)",
+            "led_color_hdr": "Color fijo del LED",
             "col_red": "Rojo", "col_green": "Verde", "col_blue": "Azul",
             "col_cyan": "Cian", "col_magenta": "Magenta", "col_yellow": "Amarillo",
             "col_white": "Blanco",
@@ -538,7 +557,7 @@ def run_gui():
             "btn_apply_active": "Apply to active profile",
             "chk_auto": "Auto-tracking while in foreground",
             "chk_notify": "Pop-up on change (polls in background)",
-            "led_color_hdr": "LED color (logo)",
+            "led_color_hdr": "Static LED color",
             "col_red": "Red", "col_green": "Green", "col_blue": "Blue",
             "col_cyan": "Cyan", "col_magenta": "Magenta", "col_yellow": "Yellow",
             "col_white": "White",
@@ -814,20 +833,33 @@ def run_gui():
         m = current_model()
         log(tr("log_connecting", name=m["name"]))
         mouse.connect(m, log=log)
+        m = mouse.model
         state_conn[0] = m["name"]; render_status()
         presets["last_model"] = m["name"]; save_presets(presets)
-        dpi_scale.configure(to=m["dpi_max"])            # ajusta el slider al modelo
+        dpi_scale.configure(to=max(DPI_MIN, m["dpi_max"]))            # ajusta el slider al modelo
         batt_supported[0] = m["wireless"]               # habilita el indicador
         try:
             fw = mouse.get_firmware(); log(tr("log_fw", a=fw[0], b=fw[1]))
         except Exception as e:
             log(tr("log_fw_err", e=e))
-        do_read_dpi()
+        tracking[0] = False
+        current_profile[0] = None
+        last_dpi[0] = None
+        last_detect[0] = None
+        state_active[0] = ("idle",)
+        state_dpi[0] = None
+        render_active(); render_dpi(); render_track_btn()
+        nb.tab(tab_perf, state="disabled" if mouse.lighting_only else "normal")
+        if mouse.lighting_only:
+            nb.select(tab_led)
+        else:
+            do_read_dpi()
         if m["wireless"]:
             do_read_battery()
         else:
             render_batt()                               # muestra "no disponible"
-        detect_active()
+        if not mouse.lighting_only:
+            detect_active()
 
     reg_text(ttk.Button(root, command=do_connect), "btn_connect").pack(fill="x", padx=12, pady=4)
 
@@ -971,6 +1003,8 @@ def run_gui():
     def detect_active(verbose=True):
         """Deduce el perfil activo comparando el DPI actual con los presets.
         No es lectura directa (Razer no la expone): es inferencia por valor."""
+        if mouse.lighting_only:
+            return
         try:
             x, _ = mouse.get_dpi()
         except Exception as e:
@@ -1058,7 +1092,7 @@ def run_gui():
     def recalibrate_on_focus():
         """Al recuperar el foco, si el DPI actual coincide con un perfil
         conocido, recoloca el contador ahi (auto-correccion silenciosa)."""
-        if not tracking[0] or mouse.dev is None:
+        if not tracking[0] or mouse.dev is None or mouse.lighting_only:
             return
         try:
             x, _ = mouse.get_dpi()
@@ -1148,10 +1182,10 @@ def run_gui():
             if len(t) != 6:
                 raise ValueError(tr("err_hex"))
             rgb = [int(t[0:2], 16), int(t[2:4], 16), int(t[4:6], 16)]
+        mouse.set_color(*rgb)
         led_color[0] = list(rgb); led_on[0] = True
         swatch.configure(bg=_hex(rgb)); hex_var.set(_hex(rgb))
         presets["led_color"] = list(rgb); save_presets(presets)
-        mouse.set_color(*rgb)
         render_onoff()
         log(tr("log_color", hex=_hex(rgb)))
 
@@ -1226,7 +1260,7 @@ def run_gui():
         return focused[0]
 
     def auto_tick():
-        if mouse.dev is not None:
+        if mouse.dev is not None and not mouse.lighting_only:
             notify_on = notify_var.get()
             # el toast exige sondear siempre; si no, solo en primer plano
             if notify_on or (auto_var.get() and _window_active()):

@@ -255,3 +255,8 @@ son marcas de sus respectivos propietarios.
 
 Si te resulta útil y te apetece invitar a un scoop de proteína:
 ☕ **https://ko-fi.com/damneddamm**
+
+
+## Razer Mouse Dock (Viper Ultimate)
+
+Selecciona **Razer Mouse Dock (Viper Ultimate)** y pulsa **Detectar / Probar conexión**. En Iluminación puedes fijar el color RGB, ajustar el brillo o apagar el LED. La pestaña de ajustes de ratón queda desactivada para la base. La base se controla por separado del ratón (USB `1532:007E`). Cierra Synapse si interfiere con la iluminación. La conservación del color tras desconectar la alimentación depende del firmware; si se restablece, vuelve a aplicar el color.

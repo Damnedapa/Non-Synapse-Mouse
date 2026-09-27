@@ -253,3 +253,8 @@ Trademark notice: project not affiliated with Razer Inc. "Razer", "Synapse" and
 
 If you find it useful and feel like buying a protein scoop:
 ☕ **https://ko-fi.com/damneddamm**
+
+
+## Razer Mouse Dock (Viper Ultimate)
+
+Select **Razer Mouse Dock (Viper Ultimate)** and click **Detect / Test connection**. The Lighting tab supports static RGB color, brightness and turning the LED off. Mouse settings are disabled for the dock. The dock is controlled separately from the mouse (USB `1532:007E`). Close Synapse if it overrides the lighting. Color retention after disconnecting power depends on firmware; reapply if it resets.
