@@ -1,7 +1,7 @@
 > 🌐 **[English](README.md)** · **[Español](README.es.md)**
 
 # Non-Synapse-Mouse
-
+![Non-Synapse-Mouse](https://i.imgur.com/Vq3PRNB.png)
 **A lightweight configuration tool for Razer mice — without Razer Synapse.**
 
 Razer Synapse/Chroma takes up space, runs background services, eats RAM and needs
