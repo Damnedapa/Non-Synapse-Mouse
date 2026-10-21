@@ -1,0 +1,14 @@
+{
+    "version": "{{VERSION}}",
+    "description": "Configure Razer mice (DPI, lighting, buttons, battery) without Razer Synapse.",
+    "homepage": "https://github.com/Damnedapa/Non-Synapse-Mouse",
+    "license": "GPL-3.0-only",
+    "url": "https://github.com/Damnedapa/Non-Synapse-Mouse/releases/download/v{{VERSION}}/Non-Synapse-Mouse_v{{VERSION}}.exe#/Non-Synapse-Mouse.exe",
+    "hash": "{{SHA256}}",
+    "bin": "Non-Synapse-Mouse.exe",
+    "shortcuts": [["Non-Synapse-Mouse.exe", "Non-Synapse-Mouse"]],
+    "checkver": "github",
+    "autoupdate": {
+        "url": "https://github.com/Damnedapa/Non-Synapse-Mouse/releases/download/v$version/Non-Synapse-Mouse_v$version.exe#/Non-Synapse-Mouse.exe"
+    }
+}

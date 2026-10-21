@@ -1,0 +1,40 @@
+import sys; sys.path.insert(0, __file__.rsplit("/", 1)[0])
+from harness import *
+import shutil
+R=[]
+def ck(n,c,i=""): R.append(bool(c)); print(("PASS " if c else "FAIL ")+n+(f" [{i}]" if not c else ""))
+TD = os.path.join(nsm.CONFIG_DIR, "themes")
+json.dump({"last_version": nsm.APP_VERSION, "welcomed": True, "lang_en_default": True}, open(nsm.CONFIG_PATH,"w"))
+def cfg(): return json.load(open(nsm.CONFIG_PATH, encoding="utf-8"))
+def A(root, api, m):
+    pump(root, 1.0)
+    ck("default theme basic/dark", api["THEME_NAME"]=="basic" and api["THEME_MODE"]=="dark")
+    api["write_theme_files"]()
+    ck("template + example written", os.path.exists(os.path.join(TD,"_template.json")) and os.path.exists(os.path.join(TD,"_example-neon.json")))
+    tpl=json.load(open(os.path.join(TD,"_template.json"),encoding="utf-8"))
+    ck("template has every colour key (dark+light)", set(tpl["dark"])==set(api["THEME_COLOR_KEYS"])==set(tpl["light"]))
+    rc=api["restart_card"].frame
+    ck("no restart card at start", not rc.winfo_ismapped())
+    api["dark_var"].set(False); pump(root,0.3)
+    ck("light mode saved", cfg().get("theme_mode")=="light")
+    ck("restart card shown", rc.winfo_ismapped())
+    api["dark_var"].set(True); pump(root,0.3)
+    ck("back to dark hides restart card", not rc.winfo_ismapped())
+    shutil.copy(os.path.join(TD,"_example-neon.json"), os.path.join(TD,"neon.json"))
+    with open(os.path.join(TD,"broken.json"),"w") as f: f.write("{nope")
+    with open(os.path.join(TD,"partial.json"),"w") as f: json.dump({"name":"Partial","dark":{"ACCENT":"#FF00FF","BG":"red"},"shape":{"style":"diamond"}}, f)
+run(A)
+def B(root, api, m):
+    pump(root, 1.0)
+    th=api["THEMES"]
+    ck("user themes loaded", "user:neon" in th and "user:partial" in th, list(th))
+    ck("broken file skipped", "user:broken" not in th)
+    ck("template/example not listed", not any(k.startswith("user:_") for k in th))
+    ck("partial keeps base colours", th["user:partial"]["dark"]["BG"]==th["basic"]["dark"]["BG"] and th["user:partial"]["dark"]["ACCENT"]=="#FF00FF")
+    ck("partial shape diamond", th["user:partial"]["shape"]["style"]=="diamond")
+    lt = nsm._TEST_API["logbox"].get("1.0","end")
+    ck("bad values reported in log", "broken.json" in lt and "BG='red'" in lt, lt[-400:])
+    vals = api["theme_combo"].cget("values")
+    ck("combo lists Neon", "Neon" in vals, vals)
+run(B)
+print(f"{sum(R)}/{len(R)}")

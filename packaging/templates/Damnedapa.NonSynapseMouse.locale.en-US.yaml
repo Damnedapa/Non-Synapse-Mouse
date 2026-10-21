@@ -1,0 +1,20 @@
+PackageIdentifier: Damnedapa.NonSynapseMouse
+PackageVersion: "{{VERSION}}"
+PackageLocale: en-US
+Publisher: Damnedapa
+PublisherUrl: https://github.com/Damnedapa
+PublisherSupportUrl: https://github.com/Damnedapa/Non-Synapse-Mouse/issues
+PackageName: Non-Synapse-Mouse
+PackageUrl: https://github.com/Damnedapa/Non-Synapse-Mouse
+License: GPL-3.0-only
+LicenseUrl: https://github.com/Damnedapa/Non-Synapse-Mouse/blob/main/LICENSE
+ShortDescription: Configure Razer mice (DPI, lighting, buttons, battery) without Razer Synapse.
+Description: Open-source, lightweight alternative to Razer Synapse for the Viper Ultimate and other Razer mice. Based on OpenRazer's protocol work. Not affiliated with Razer.
+Tags:
+- razer
+- mouse
+- dpi
+- rgb
+- synapse-alternative
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
