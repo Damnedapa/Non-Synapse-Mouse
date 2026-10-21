@@ -28,7 +28,8 @@ sin nube y sin instalar drivers.
 
 FUNCIONES
   - Selector de modelo (o autodetección de cualquier Razer).
-  - Interfaz bilingüe español / inglés con selector arriba a la izquierda.
+  - Interfaz bilingüe español / inglés (interruptor ES|EN en la barra lateral;
+    inglés por defecto).
   - Leer / aplicar DPI (se graba en la memoria interna del ratón → persiste).
   - Cambiar la tasa de sondeo (125 / 500 / 1000 Hz).
   - Leer batería y estado de carga (en modelos inalámbricos).
@@ -43,7 +44,23 @@ FUNCIONES
   - (v1.1.0) Pestaña Opciones: minimizar a la bandeja del sistema, arrancar
     con Windows (minimizado), buscar e instalar actualizaciones desde GitHub,
     y botón para reportar errores (abre un "issue" con los datos ya rellenos).
-  - (v1.1.0) El registro (log) y los errores siguen el idioma elegido.
+  - (v1.2.0) Interfaz nueva estilo Configuración de Windows 11 (modo oscuro):
+    barra lateral, tarjetas-fila, interruptores, cambios que se aplican al
+    momento, aviso de perfil con barra de 5 tramos y escalado nítido (DPI).
+  - (v1.3.0) Ventana redimensionable (recuerda tamaño y posición), silueta del
+    ratón suavizada, avisos de batería (arriba a la derecha), parpadeo del logo
+    al cambiar de perfil, botón «sniper» asignable, menú de la bandeja con
+    perfiles, selector de tema, bienvenida y novedades.
+  - (v1.4.0) Sistema de temas (colores + forma de las piezas, temas propios en
+    .json), modo claro, piezas redondeadas suavizadas (adiós dientes de sierra),
+    selector de color con disco, botones en gris si su familia esta apagada,
+    Ko-fi en la barra lateral y registro siempre en inglés. Depuración: solo
+    se aceptan respuestas del ratón que contesten a la orden enviada y con
+    estado OK (adiós al 0 % de batería falso), lecturas periódicas y cambios de
+    DPI en hilos propios (la ventana no se congela), pulsaciones rápidas que ya
+    no se pierden y configuración que se guarda de forma segura.
+    (La 1.4.0 es la primera pública desde la 1.0.0: la 1.1, 1.2 y 1.3 fueron
+    versiones internas de desarrollo.)
   - (v1.1.0) Configuración en %APPDATA%/Non-Synapse-Mouse (se migra sola la
     antigua), seguimiento de perfiles recordado entre sesiones, una sola
     instancia a la vez y detección mientras la ventana esté visible.
@@ -97,6 +114,9 @@ import subprocess
 import urllib.request
 import urllib.parse
 import platform
+import math
+import base64
+import re
 
 try:
     import hid  # paquete pip "hidapi"
@@ -171,11 +191,17 @@ else:
 CONFIG_PATH = os.path.join(CONFIG_DIR, "razer_presets.json")
 KOFI_URL = "https://ko-fi.com/damneddamm"
 
+# --- Modo Mediavida (secreto: se desbloquea con el codigo Konami) ---------------
+MV_BASE = "https://www.mediavida.com"     # solo para abrir enlaces en el navegador
+MV_SPY_URL = MV_BASE + "/foro/spy"
+MV_THREAD_URL = MV_BASE + "/foro/dev/non-synapse-mouse-configura-tu-raton-razer-sin-synapse-wind-739643"
+KONAMI = ("up", "up", "down", "down", "left", "right", "left", "right", "b", "a")
+
 # ---------------------------------------------------------------------------
 # Datos de la aplicacion (version, repositorio, enlaces)
 # ---------------------------------------------------------------------------
 APP_NAME    = "Non-Synapse-Mouse"
-APP_VERSION = "1.1.0"                        # versionado semantico MAYOR.MENOR.PARCHE
+APP_VERSION = "1.4.0"                        # versionado semantico MAYOR.MENOR.PARCHE
 GITHUB_REPO = "Damnedapa/Non-Synapse-Mouse"
 REPO_URL    = f"https://github.com/{GITHUB_REPO}"
 ISSUES_URL  = f"{REPO_URL}/issues/new"
@@ -206,6 +232,7 @@ CORE_MSG = {
         "none_resp":     "Se abrieron las interfaces pero ninguna respondió. Cierra Synapse por completo (servicios incluidos) y reintenta.",
         "bad_poll":      "La tasa de sondeo debe ser 125, 500 o 1000 Hz.",
         "light_fail":    "El ratón no aceptó el comando de iluminación.",
+        "bad_status":    "El ratón no dio una respuesta válida ({st}).",
     },
     "en": {
         "not_connected": "Not connected. Press \u201cDetect / Test connection\u201d.",
@@ -222,6 +249,7 @@ CORE_MSG = {
         "none_resp":     "Interfaces opened but none responded. Close Synapse completely (services included) and retry.",
         "bad_poll":      "Polling rate must be 125, 500 or 1000 Hz.",
         "light_fail":    "The mouse didn't accept the lighting command.",
+        "bad_status":    "The mouse didn't give a valid answer ({st}).",
     },
 }
 
@@ -274,13 +302,28 @@ def download_file(url, dest, timeout=60):
     """Descarga url -> dest (via fichero temporal, para no dejar uno a medias)."""
     tmp = dest + ".part"
     req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-    with urllib.request.urlopen(req, timeout=timeout) as r, open(tmp, "wb") as fh:
-        while True:
-            chunk = r.read(65536)
-            if not chunk:
-                break
-            fh.write(chunk)
-    os.replace(tmp, dest)
+    try:
+        got = 0
+        with urllib.request.urlopen(req, timeout=timeout) as r, open(tmp, "wb") as fh:
+            try:
+                want = int(r.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                want = 0
+            while True:
+                chunk = r.read(65536)
+                if not chunk:
+                    break
+                fh.write(chunk); got += len(chunk)
+        if want and got != want:                       # descarga cortada: no se usa
+            raise IOError(f"incomplete download ({got} of {want} bytes)")
+        with open(tmp, "rb") as fh:
+            if dest.lower().endswith(".exe") and fh.read(2) != b"MZ":
+                raise IOError("the downloaded file is not a Windows program")
+        os.replace(tmp, dest)
+    except Exception:
+        try: os.remove(tmp)
+        except Exception: pass
+        raise
 
 
 # Arranque con Windows: valor en HKCU\...\Run (solo afecta al usuario actual,
@@ -366,30 +409,50 @@ READ_BUILDERS = {
 }
 
 
+class MouseBusy(RuntimeError):
+    """El raton esta conectado pero no dio datos validos (dormido, ocupado,
+    timeout del receptor). No significa que se haya desconectado."""
+
+
 class RazerMouse:
     def __init__(self):
         self.dev = None
         self.model = None
         self.pid = None
         self.tx_cache = {}   # command_class -> transaction_id que funciona
+        # Varios hilos hablan con el raton (interfaz, parpadeo del logo, sniper):
+        # cada envio+lectura tiene que ser atomico o se mezclarian las respuestas.
+        self._lock = threading.RLock()
 
     # --- transporte ------------------------------------------------------
     def _raw(self, dev, report, command_class, retries=5):
+        with self._lock:
+            return self._raw_unlocked(dev, report, command_class, retries)
+
+    def _raw_unlocked(self, dev, report, command_class, retries=5):
+        """Envia un informe y lee la respuesta. Solo vale una respuesta que
+        haga eco de la clase Y del comando enviados (como comprueba OpenRazer):
+        el receptor inalambrico a veces devuelve la respuesta ANTERIOR o un
+        informe vacio mientras el raton se despierta, y eso daba lecturas
+        falsas (p. ej. bateria al 0 % al arrancar)."""
         last = None
         for _ in range(retries):
             if dev.send_feature_report(bytes([0x00]) + bytes(report)) < 0:
                 return None
-            time.sleep(0.06)
-            raw = dev.get_feature_report(0x00, 91)
-            if not raw:
-                time.sleep(0.05); continue
-            resp = _normalize(raw, command_class)
-            if len(resp) < 8:
-                time.sleep(0.05); continue
-            last = resp
-            if resp[0] == 0x01:      # ocupado
-                time.sleep(0.08); continue
-            return resp
+            # Se lee hasta 3 veces ANTES de volver a enviar: reenviar una
+            # escritura con VARSTORE gastaria otra escritura en la memoria.
+            for k in range(3):
+                time.sleep(0.06 if k == 0 else 0.04)
+                raw = dev.get_feature_report(0x00, 91)
+                if not raw:
+                    continue
+                resp = _normalize(raw, command_class)
+                if len(resp) < 8 or resp[6] != report[6] or resp[7] != report[7]:
+                    continue                      # no es la respuesta a ESTE comando
+                last = resp
+                if resp[0] in (0x00, 0x01):       # aun sin procesar / ocupado
+                    time.sleep(0.04); continue
+                return resp
         return last
 
     def _probe_tx(self, dev, command_class):
@@ -417,7 +480,9 @@ class RazerMouse:
             return self.tx_cache[command_class]
         tx = self._probe_tx(self.dev, command_class)
         if tx is None:
-            tx = self.tx_cache.get(0x00, 0xFF)   # fallback
+            # no se pudo averiguar (p. ej. raton dormido): se usa el de la clase
+            # 0x00 SIN guardarlo, para volver a sondear la proxima vez
+            return self.tx_cache.get(0x00, 0xFF)
         self.tx_cache[command_class] = tx
         return tx
 
@@ -429,6 +494,17 @@ class RazerMouse:
         if resp is None:
             raise RuntimeError(_m("no_response"))
         return resp
+
+    STATUS_OK = 0x02
+
+    def _read(self, command_class, command_id, data_size, args=b""):
+        """Lectura: si el raton no contesta OK (ocupado, fallo, timeout del
+        receptor, no soportado), los datos no valen y se lanza un error en vez
+        de devolver ceros."""
+        r = self._cmd(command_class, command_id, data_size, args)
+        if r[0] != self.STATUS_OK:
+            raise MouseBusy(_m("bad_status", st=f"0x{r[0]:02X}"))
+        return r
 
     # --- conexion --------------------------------------------------------
     def connect(self, model, log=lambda s: None):
@@ -488,18 +564,21 @@ class RazerMouse:
 
     # --- comandos --------------------------------------------------------
     def get_firmware(self):
-        r = self._cmd(0x00, 0x81, 0x02)
+        r = self._read(0x00, 0x81, 0x02)
         return r[8], r[9]     # major, minor
 
     def get_battery(self):
-        r = self._cmd(0x07, 0x80, 0x02)
+        r = self._read(0x07, 0x80, 0x02)
         pct = round(r[9] / 255 * 100)
-        c = self._cmd(0x07, 0x84, 0x02)
+        c = self._read(0x07, 0x84, 0x02)
         return pct, bool(c[9])
 
     def get_dpi(self):
-        r = self._cmd(0x04, 0x85, 0x07, bytes([VARSTORE]))
-        return (r[9] << 8) | r[10], (r[11] << 8) | r[12]
+        r = self._read(0x04, 0x85, 0x07, bytes([VARSTORE]))
+        x, y = (r[9] << 8) | r[10], (r[11] << 8) | r[12]
+        if x < DPI_MIN or y < DPI_MIN:                 # 0 o basura: no es un DPI real
+            raise MouseBusy(_m("bad_status", st="dpi=0"))
+        return x, y
 
     def set_dpi(self, dpi_x, dpi_y=None, persist=True):
         dpi_max = self.model["dpi_max"] if self.model else 30000
@@ -525,7 +604,7 @@ class RazerMouse:
         return r[0]
 
     def get_device_mode(self):
-        r = self._cmd(0x00, 0x84, 0x02)
+        r = self._read(0x00, 0x84, 0x02)
         return r[8]
 
     def set_poll_rate(self, hz):
@@ -551,16 +630,19 @@ class RazerMouse:
                 return resp
         raise RuntimeError(_m("light_fail"))
 
-    def set_color(self, r, g, b):
+    def set_color(self, r, g, b, store=True):
+        """Color fijo del LED. store=False (NOSTORE) no graba en la memoria del
+        raton: se usa para el parpadeo, que cambia el color muchas veces."""
         led = self.model.get("led", LOGO_LED) if self.model else LOGO_LED
         # static: args = [varstore, led, effect=0x01, 0,0, 0x01, R, G, B]
-        args = bytes([VARSTORE, led, 0x01, 0x00, 0x00, 0x01, r & 0xFF, g & 0xFF, b & 0xFF])
+        args = bytes([VARSTORE if store else NOSTORE, led, 0x01, 0x00, 0x00, 0x01,
+                      r & 0xFF, g & 0xFF, b & 0xFF])
         return self._cmd_light(0x02, 0x09, args)
 
-    def set_light_off(self):
+    def set_light_off(self, store=True):
         led = self.model.get("led", LOGO_LED) if self.model else LOGO_LED
         # none: args = [varstore, led, effect=0x00]
-        return self._cmd_light(0x02, 0x06, bytes([VARSTORE, led, 0x00]))
+        return self._cmd_light(0x02, 0x06, bytes([VARSTORE if store else NOSTORE, led, 0x00]))
 
     def set_brightness(self, pct):
         led = self.model.get("led", LOGO_LED) if self.model else LOGO_LED
@@ -584,9 +666,10 @@ REP4_DPI_DN = 0x21
 
 
 class ButtonListener:
-    def __init__(self, pid, on_press, on_other=None):
+    def __init__(self, pid, on_press, on_other=None, on_release=None):
         self.pid = pid
         self.on_press = on_press          # se llama desde un hilo secundario
+        self.on_release = on_release      # idem, al SOLTAR (lo usa el sniper)
         self.on_other = on_other          # informes desconocidos (diagnostico)
         self._run = False
         self._threads = []
@@ -631,6 +714,10 @@ class ButtonListener:
             for c in codes - prev:        # solo el flanco de pulsacion
                 try: self.on_press(c)
                 except Exception: pass
+            if self.on_release is not None:
+                for c in prev - codes:    # y el flanco de soltar
+                    try: self.on_release(c)
+                    except Exception: pass
             prev = codes
 
     def alive(self):
@@ -882,24 +969,238 @@ def send_input_mouse(action, down):
 
 
 # ---------------------------------------------------------------------------
+# Avisos de bateria (logica pura, sin interfaz: asi se puede probar aparte)
+# ---------------------------------------------------------------------------
+# Se avisa al cruzar cada uno de estos niveles (bajando). Para que una lectura
+# que oscile ±1 % alrededor de un nivel no repita el aviso, un nivel solo se
+# "rearma" cuando la bateria sube al menos BATT_REARM_MARGIN puntos por encima.
+BATT_ALERT_LEVELS = (90, 80, 70, 60, 50, 40, 30, 20, 15, 10, 8, 6, 5, 4, 3, 2, 1)
+BATT_REARM_MARGIN = 2
+
+
+def battery_alert_step(pct, charging, alerted, first):
+    """Decide si toca avisar. Devuelve (tipo, nuevo_conjunto_de_niveles_avisados).
+    tipo: None, "open" (primera lectura tras abrir el programa) o "low"."""
+    alerted = set(alerted)
+    if charging:
+        alerted.clear()                          # cargando: todo vuelve a quedar armado
+        return ("open" if first else None), alerted
+    crossed = [t for t in BATT_ALERT_LEVELS if pct <= t]
+    alerted = {t for t in alerted if t >= pct - BATT_REARM_MARGIN}
+    new = [t for t in crossed if t not in alerted]
+    alerted.update(crossed)
+    if first:
+        return "open", alerted
+    return ("low" if new else None), alerted
+
+
+def battery_full_step(pct, charging, notified):
+    """Aviso de carga completa. Devuelve (avisar, notificado_ahora)."""
+    if not charging or pct < 95:
+        return False, False
+    if pct >= 100 and not notified:
+        return True, True
+    return False, notified
+
+
+# Novedades que se muestran una vez tras actualizar (y desde Acerca de).
+WHATS_NEW = {
+    # Lo que ve quien actualiza. La 1.4.0 es la primera publica desde la 1.0.0,
+    # asi que resume todo lo nuevo desde entonces.
+    "1.4.0": {
+        "en": [
+            "Your 5 profiles work like Synapse: the mouse's profile button switches them instantly, and you edit them here.",
+            "A wizard writes your profiles to the mouse's own memory, if you want them without the app.",
+            "New Windows 11 style interface: resizable, crisp at any scaling, dark or light mode, and smooth edges.",
+            "Button remapping (while the app is open) and a Sniper button: hold it and the DPI drops.",
+            "Battery alerts at the top right of the screen, and the battery no longer shows 0 % by mistake while the mouse wakes up.",
+            "Logo blink in the profile's colour when you change profile, and a colour picker with a colour wheel.",
+            "System tray with profile switching, start with Windows, and updates from inside the app.",
+            "Custom themes (.json): colours and the shape of the parts. English by default, Spanish one click away.",
+        ],
+        "es": [
+            "Tus 5 perfiles funcionan como en Synapse: el botón de perfil del ratón los cambia al instante y los editas aquí.",
+            "Un asistente graba tus perfiles en la memoria del propio ratón, si los quieres sin el programa.",
+            "Interfaz nueva estilo Windows 11: redimensionable, nítida con cualquier escalado, modo oscuro o claro y bordes suaves.",
+            "Remapeo de botones (con el programa abierto) y botón Sniper: lo mantienes y baja el DPI.",
+            "Avisos de batería arriba a la derecha, y la batería ya no marca 0 % por error mientras el ratón se despierta.",
+            "El logo parpadea con el color del perfil al cambiar de perfil, y selector de color con disco.",
+            "Bandeja del sistema con cambio de perfil, inicio con Windows y actualizaciones desde el propio programa.",
+            "Temas propios (.json): colores y forma de las piezas. Inglés por defecto, español a un clic.",
+        ],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Modo Mediavida: utilidades sin interfaz (se pueden probar sin ventana).
+# No se conecta a ningun sitio: el logo va dentro del programa.
+# ---------------------------------------------------------------------------
+class KonamiDetector:
+    """Recibe teclas (keysym de Tk) y avisa cuando se completa
+    arriba arriba abajo abajo izquierda derecha izquierda derecha B A."""
+    def __init__(self, seq=KONAMI):
+        self.seq = tuple(seq)
+        self.hist = []
+
+    def feed(self, keysym):
+        """Se queda con las ultimas teclas y mira si acaban en la secuencia
+        (asi da igual pulsar alguna de mas antes, p. ej. tres veces arriba)."""
+        self.hist.append(str(keysym).lower())
+        del self.hist[:-len(self.seq)]
+        if tuple(self.hist) == self.seq:
+            self.hist = []
+            return True
+        return False
+
+
+class IntroSound:
+    """Musiquilla del modo Mediavida. En Windows usa el reproductor que trae
+    el sistema (MCI): no hace falta instalar nada y no bloquea la ventana."""
+    ALIAS = "nsm_mv_intro"
+
+    def __init__(self):
+        self.playing = False
+
+    def _mci(self, cmd):
+        import ctypes
+        return ctypes.windll.winmm.mciSendStringW(cmd, None, 0, None)
+
+    def play(self, path, volume=650):
+        if sys.platform != "win32" or not path or not os.path.exists(path):
+            return False
+        try:
+            self.stop()
+            if self._mci(f'open "{path}" type mpegvideo alias {self.ALIAS}') != 0:
+                return False
+            self._mci(f"setaudio {self.ALIAS} volume to {int(volume)}")
+            self.playing = self._mci(f"play {self.ALIAS} from 0") == 0
+            return self.playing
+        except Exception:
+            return False
+
+    def stop(self):
+        if sys.platform != "win32":
+            return
+        try:
+            self._mci(f"close {self.ALIAS}")
+        except Exception:
+            pass
+        self.playing = False
+
+
+# ---------------------------------------------------------------------------
 # Persistencia de presets
 # ---------------------------------------------------------------------------
+_PRESET_BOOLS = ("welcomed", "tray", "soft_remap", "profile_blink", "notify_popup", "led_on",
+                 "learning", "lang_en_default", "control_verified", "control_mode", "check_updates",
+                 "batt_full", "batt_alert", "ask_burn_on_exit", "tracking", "mv_unlocked", "mv_welcome")
+_PRESET_STRS = ("theme", "last_page", "last_model", "last_version")
+
+
+def _int_in(v, lo, hi):
+    return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+
+
+def sanitize_presets(d):
+    """Quita de la configuracion lo que no tenga el tipo o el rango esperado
+    (archivo editado a mano, a medio escribir, de otra version...). Lo que se
+    quita vuelve a su valor por defecto; el resto se respeta."""
+    if not isinstance(d, dict):
+        return {}
+    out = dict(d)
+    def drop(k):
+        out.pop(k, None)
+    for k in _PRESET_BOOLS:
+        if k in out and not isinstance(out[k], bool):
+            drop(k)
+    for k in _PRESET_STRS:
+        if k in out and not isinstance(out[k], str):
+            drop(k)
+    if out.get("lang") not in (None, "es", "en"): drop("lang")
+    for k in ("mv_user", "mv_avatar", "mv_checked"):   # restos del modo Mediavida con red (dev)
+        drop(k)
+    if out.get("theme_mode") not in (None, "dark", "light"): drop("theme_mode")
+    if "sniper_dpi" in out and not _int_in(out["sniper_dpi"], 100, 30000): drop("sniper_dpi")
+    if "poll_rate" in out and out["poll_rate"] not in (125, 500, 1000): drop("poll_rate")
+    if "led_bright" in out and not _int_in(out["led_bright"], 0, 100): drop("led_bright")
+    if "active_profile" in out and out["active_profile"] is not None and not _int_in(out["active_profile"], 0, 4):
+        drop("active_profile")
+    lc = out.get("led_color")
+    if "led_color" in out and not (isinstance(lc, list) and len(lc) == 3 and all(_int_in(c, 0, 255) for c in lc)):
+        drop("led_color")
+    wg = out.get("win_geom")
+    if "win_geom" in out and not (isinstance(wg, list) and len(wg) == 4
+                                  and all(isinstance(c, int) and not isinstance(c, bool) for c in wg)):
+        drop("win_geom")
+    for k in ("profiles", "dpi_presets", "burned_profiles"):
+        v = out.get(k)
+        if k in out:
+            if isinstance(v, list) and len(v) == 5:
+                out[k] = [x if _int_in(x, 100, 30000) else None for x in v]
+            else:
+                drop(k)
+    bs = out.get("buttons_seen")
+    if "buttons_seen" in out:
+        if isinstance(bs, list):
+            out["buttons_seen"] = [c for c in bs if _int_in(c, 1, 255)]
+        else:
+            drop("buttons_seen")
+    ss = out.get("soft_seen")
+    if "soft_seen" in out:
+        if isinstance(ss, list):
+            out["soft_seen"] = [c for c in ss if isinstance(c, str)]
+        else:
+            drop("soft_seen")
+    for k in ("button_map", "soft_map"):
+        m = out.get(k)
+        if k in out:
+            if isinstance(m, dict):
+                clean = {}
+                for kk, vv in m.items():
+                    if not isinstance(vv, str):
+                        continue
+                    if k == "button_map":
+                        try:
+                            if not 1 <= int(kk) <= 255:
+                                continue
+                        except (TypeError, ValueError):
+                            continue
+                    clean[str(kk)] = vv
+                out[k] = clean
+            else:
+                drop(k)
+    return out
+
+
 def load_presets():
     """Carga la configuracion. Si aun no existe la nueva pero si la antigua
-    (junto al programa), usa la antigua: al guardar ya queda migrada."""
-    for path in (CONFIG_PATH, LEGACY_CONFIG_PATH):
+    (junto al programa), usa la antigua: al guardar ya queda migrada. Si el
+    archivo esta roto, se usa la copia de seguridad (.bak) del ultimo guardado
+    bueno."""
+    for path in (CONFIG_PATH, CONFIG_PATH + ".bak", LEGACY_CONFIG_PATH):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            if isinstance(data, dict):
+                return sanitize_presets(data)
         except Exception:
             continue
     return {}
 
 def save_presets(data):
+    """Guarda de forma segura: se escribe a un archivo temporal y se cambia por
+    el bueno de golpe (si se va la luz a mitad, no queda un archivo roto). El
+    anterior queda como .bak."""
     try:
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+        if os.path.exists(CONFIG_PATH):
+            try: os.replace(CONFIG_PATH, CONFIG_PATH + ".bak")
+            except Exception: pass
+        os.replace(tmp, CONFIG_PATH)
     except Exception:
         pass
 
@@ -971,6 +1272,119 @@ def run_gui():
     # =====================================================================
     LANG = {
         "es": {
+            # --- v1.3.0 ---
+            "log_blink_unknown": "Parpadeo omitido: el programa aún no sabe cómo está el LED. Enciéndelo o apágalo una vez en Iluminación y funcionará.",
+            "model_auto": "Auto-detectar (cualquiera)",
+            "grp_battery": "Batería", "grp_appearance": "Apariencia", "grp_sniper": "Sniper",
+            "batt_alert_title": "Avisos de batería",
+            "batt_alert_desc": "Pop-ups de estado.",
+            "batt_full_title": "Avisar al cargar del todo",
+            "batt_full_desc": "Aviso cuando la batería llega al 100 % mientras carga.",
+            "batt_test_btn": "Probar",
+            "ba_level": "Nivel de batería", "ba_low": "Batería baja", "ba_crit": "Batería muy baja · conéctalo ya",
+            "ba_charging": "Cargando", "ba_full": "Carga completa", "ba_full_sub": "Ya puedes desenchufarlo.",
+            "log_batt_alert": "Aviso de batería: {pct} %",
+            "theme_title": "Tema", "theme_desc": "Próximamente.", "theme_basic": "Básico",
+            "dark_title": "Modo oscuro", "dark_desc": "Desactívalo para usar el modo claro.",
+            "theme_restart_title": "Reinicia para aplicar el tema",
+            "theme_restart_desc": "El programa se cierra y se vuelve a abrir solo. El ratón no pierde nada.",
+            "theme_restart_btn": "Reiniciar ahora",
+            "themes_custom_title": "Temas personalizados",
+            "themes_custom_desc": "Archivos .json con colores y forma de las piezas. En la carpeta hay una plantilla y un ejemplo.",
+            "themes_custom_btn": "Abrir carpeta",
+            "nav_kofi": "Spot me a scoop",
+            "btn_disabled_note": "Activa el remapeo para editar los botones.",
+            "log_themes_folder": "Carpeta de temas: {path}",
+            "mv_unl_title": "¡Modo Mediavida desbloqueado!",
+            "mv_unl_sub": "Puedes desactivarlo en Ajustes, en Tema.", "mv_unl_ok": "Vale",
+            "nav_mv_spy": "Spy", "nav_mv_thread": "Hilo en Mediavida",
+            "log_mv_on": "Modo Mediavida activado.",
+            "log_restart": "Reiniciando para aplicar el tema...",
+            "blink_title": "Parpadear el logo al cambiar de perfil",
+            "blink_desc": "Tres pulsos con el color del perfil y luego vuelve a como estaba.",
+            "blink_test": "Probar", "grp_blink": "Indicador de perfil",
+            "log_blink_fail": "El LED no admite colores temporales: se desactiva el parpadeo.",
+            "sniper_title": "DPI del sniper",
+            "sniper_desc": "Mientras mantengas el botón al que asignes «Sniper», el ratón baja a este DPI.",
+            "act_sniper": "Sniper (DPI al mantener)",
+            "log_sniper_on": "Sniper activado → {x} DPI", "log_sniper_off": "Sniper soltado → {x} DPI",
+            "err_sniper": "El DPI del sniper debe estar entre {lo} y {hi}.",
+            "tray_profiles": "Perfiles",
+            "wl_title": "Te damos la bienvenida", "wl_sub": "Tres cosas antes de empezar",
+            "wl_1": "Cierra Razer Synapse por completo (servicios incluidos) o desinstálalo. Si está abierto, puede bloquear los comandos.",
+            "wl_2": "Enchufa el ratón (o su receptor). El programa lo encuentra solo; la barra lateral te dice cuándo está conectado.",
+            "wl_3": "Tus perfiles viven en el programa. Con él abierto, el botón de perfil y los de DPI del ratón los cambian.",
+            "wl_btn": "Entendido",
+            "wn_title": "Novedades de la v{v}", "wn_link": "Novedades", "wn_desc": "Mira qué ha cambiado en esta versión.",
+            "wn_show": "Ver",
+            # --- v1.2.0: interfaz estilo Configuracion de Windows 11 ---
+            "nav_profiles": "Perfiles", "nav_lighting": "Iluminación", "nav_buttons": "Botones",
+            "nav_settings": "Ajustes", "nav_log": "Registro", "nav_about": "Acerca de",
+            "active_hdr": "Perfil activo",
+            "active_desc": "El botón de perfil del ratón pasa al siguiente; DPI abajo vuelve al anterior.",
+            "active_small": "Perfil {n} · LED {color}",
+            "my_profiles_hdr": "Tus perfiles",
+            "prof_led_desc": "LED {color}", "prof_off_desc": "LED {color} · sin DPI, se salta",
+            "btn_use": "Usar", "lbl_in_use": "En uso", "ph_off": "Apagado",
+            "poll_title": "Frecuencia de sondeo",
+            "poll_desc": "Cada cuánto informa el ratón al PC. Se aplica al momento.",
+            "btn_burn_dots": "Grabar en el ratón…", "link_reset": "Restablecer valores",
+            "led_title": "LED del logo", "led_desc": "Al encenderlo vuelve el último color.",
+            "color_hdr": "Color", "color_cur": "Color actual",
+            "color_cur_desc": "Pulsa Elegir para abrir el selector de color.",
+            "color_pick_btn": "Elegir…", "picker_title": "Elegir color", "picker_bright": "Brillo",
+            "picker_new": "Nuevo", "picker_cur": "Actual",
+            "picker_note": "Los tonos oscuros se ven en el LED como el mismo color, pero más tenue.",
+            "color_quick": "Colores rápidos", "bright_hdr": "Brillo", "bright_title": "Intensidad",
+            "soft_title": "Remapeo por software",
+            "soft_desc": "Solo con el programa abierto y aún no se guarda en el ratón. Algunos anticheats pueden detectarlo: desactívalo al jugar con ellos.",
+            "soft_desc_na": "Solo disponible en Windows.",
+            "grp_win_btns": "Botones estándar", "grp_mouse_btns": "Botones especiales",
+            "grp_mouse_note": "Los gestiona el propio ratón; necesitan el modo control", "pressed": "Pulsado",
+            "grp_mouse": "Ratón", "grp_system": "Sistema", "grp_updates": "Actualizaciones",
+            "model_title": "Modelo", "model_desc": "«Auto-detectar» sirve para cualquier Razer.",
+            "ctrl_title": "El programa controla los perfiles",
+            "ctrl_desc": "Como Synapse. Si lo desactivas, el perfil se deduce por el DPI.",
+            "notify_title": "Notificar el cambio de perfil",
+            "notify_desc": "Aviso abajo a la derecha durante 2 segundos.",
+            "ask_exit_title": "Al cerrar, ofrecer grabar en el ratón",
+            "ask_exit_desc": "Solo si los perfiles han cambiado.",
+            "tray_title": "Minimizar a la bandeja del sistema", "tray_desc": "Sigue funcionando junto al reloj.",
+            "autostart_title": "Iniciar con Windows", "autostart_desc": "Se abre minimizado y se conecta solo.",
+            "autostart_desc_na": "Solo disponible en Windows.",
+            "lang_title": "Idioma",
+            "updt_latest": "Estás al día", "updt_checking": "Buscando actualizaciones…",
+            "updt_new": "Nueva versión disponible: {tag}", "updt_err": "No se pudo comprobar",
+            "updt_idle": "Actualizaciones", "updt_dl": "Descargando {tag}…",
+            "upd_check_btn": "Buscar actualizaciones",
+            "upd_start_title": "Buscar actualizaciones al iniciar",
+            "upd_start_desc": "Una consulta a GitHub. Sin telemetría.",
+            "on": "Activado", "off": "Desactivado",
+            "log_title": "Registro",
+            "log_desc": "Lo que va haciendo el programa. Si algo falla, esto es lo que hay que mirar. Siempre en inglés, para que se entienda al reportar un error.",
+            "btn_copy": "Copiar", "btn_report_plain": "Reportar un error",
+            "report_desc": "Abre un issue en GitHub con la versión, el modelo y estas líneas. No se envía nada hasta que lo publiques.",
+            "log_copied": "Registro copiado al portapapeles.",
+            "about_app_desc": "Configurador ligero para ratones Razer, sin Synapse. Comunicación directa con el ratón, sin servicios en segundo plano intrusivos, sin cuenta y sin instalar drivers.",
+            "links_hdr": "Enlaces", "link_repo": "Código fuente en GitHub", "why_hdr": "Por qué existe",
+            "link_openrazer_desc": "La ingeniería inversa del protocolo Razer en la que se basa este programa.",
+            "link_kofi_desc": "Ko-fi, si te resulta útil.",
+            "license_hdr": "Licencia", "license_title": "GPL-3.0",
+            "license_desc": "Software libre, se ofrece sin garantía. Proyecto independiente, no afiliado a Razer. «Razer», «Synapse» y «Chroma» son marcas de Razer Inc.",
+            "searching": "Buscando el ratón…", "searching_desc": "Enchúfalo y cierra Razer Synapse.",
+            "conn_only": "Conectado", "conn_batt": "Conectado · {pct} %",
+            "conn_batt_chg": "Conectado · {pct} % · cargando",
+            "toast_led": "Perfil {n} · LED {color}",
+            "tip_profile": "Perfil {n} · {x} DPI", "tip_batt": "Batería {pct} %",
+            "tip_batt_chg": "Batería {pct} % (cargando)",
+            "burn_step2": "Paso {n} de {total}",
+            "burn_msg_a": "Pulsa el botón de perfil de debajo del ratón hasta que el LED se ponga ",
+            "burn_msg_b": ". Luego pulsa «Grabar este perfil».",
+            "burn_will": "Se grabará", "burn_will_val": "{x} DPI · Perfil {n}",
+            "burn_item": "Perfil {n} ({color}) · {x} DPI, {state}",
+            "burn_checked": "comprobado", "burn_unchecked": "sin confirmar",
+            "led_red": "rojo", "led_green": "verde", "led_blue": "azul",
+            "led_turq": "turquesa", "led_yellow": "amarillo",
             "status_disc": "Buscando el ratón…",
             "status_conn": "Conectado · {name}",
             "model_lbl": "Modelo:",
@@ -1039,6 +1453,7 @@ def run_gui():
             "log_fw": "Firmware: v{a}.{b}",
             "log_fw_err": "(firmware no leído: {e})",
             "log_batt": "Batería {pct}%{chg}",
+            "log_batt_doubt": "Lectura de batería dudosa ({pct} %): se vuelve a comprobar.",
             "log_dpi_cur": "DPI actual: {x} × {y}",
             "log_dpi_set": "DPI → {x} ({st}){tag}",
             "tag_saved": "  [guardado]",
@@ -1081,8 +1496,8 @@ def run_gui():
             "upd_err": "No se pudo comprobar (¿sin conexión?).",
             "upd_downloading": "Descargando {tag}...",
             "help_hdr": "Ayuda",
-            "btn_report": "\U0001F41E  Reportar un error",
-            "bug_link": "\U0001F41E Reportar un error",
+            "btn_report": "Reportar un error",
+            "bug_link": "Reportar un error",
             "dlg_upd_title": "Actualización disponible",
             "dlg_upd_msg": "Hay una versión nueva ({tag}); tienes la v{v}.\n\n¿Descargarla ahora? Se guardará junto al programa actual y tu configuración se conserva.",
             "dlg_upd_script": "Estás usando el script de Python: se abrirá la página de la nueva versión para que descargues el código.",
@@ -1108,7 +1523,7 @@ def run_gui():
             "prof_wait": "Buscando el ratón… (conéctalo y cierra Razer Synapse)",
             "prof_learning": "Aprendiendo tus perfiles: pulsa el botón de perfil del ratón hasta dar la vuelta completa ({n}/5)",
             "prof_active": "Perfil activo: Perfil {n} · {x} DPI",
-            "prof_unknown": "DPI {x} no coincide con tus perfiles · «Restablecer perfiles» para reaprender",
+            "prof_unknown": "DPI {x} no coincide con tus perfiles · «Restablecer valores» para reaprender",
             "btn_apply_prof": "Aplicar DPI al perfil activo",
             "mouse_hdr": "Ratón",
             "btn_reconnect": "Reconectar",
@@ -1119,7 +1534,7 @@ def run_gui():
             "log_learn_done": "Perfiles aprendidos ({n}). A partir de aquí va solo.",
             "log_prof_changed": "Perfil {n} · {x} DPI",
             "log_prof_updated": "El Perfil {n} ahora tiene {x} DPI",
-            "log_prof_unknown": "El DPI {x} no coincide con ningún perfil. Si has cambiado tus perfiles, pulsa «Restablecer perfiles».",
+            "log_prof_unknown": "El DPI {x} no coincide con ningún perfil. Si has cambiado tus perfiles, pulsa «Restablecer valores».",
             "log_dpi_applied": "Perfil {n} → {x} DPI ({st}), guardado en el ratón",
             "log_dpi_applied_nop": "DPI → {x} ({st})",
             "log_dup": "Aviso: el Perfil {n} ya tiene {x} DPI; con dos perfiles iguales no puedo distinguirlos.",
@@ -1162,7 +1577,7 @@ def run_gui():
             "log_btn_raw": "Señal desconocida del ratón: informe {rid} · {data}",
             "tab_btn": "Mapeo",
             "btn_hint": "Pulsa los botones del ratón: los que el ratón le comunique al programa aparecen aquí y puedes asignarles una acción. Los clics, laterales estándar y la rueda los gestiona Windows y no se pueden remapear aquí.",
-            "btn_compat": "Ahora mismo no funcionan: activa «El programa controla los perfiles» en Opciones.",
+            "btn_compat": "Ahora mismo no funcionan: activa «El programa controla los perfiles» en Ajustes.",
             "bn_profile": "Botón de perfil", "bn_dpicycle": "Botón de ciclo de DPI",
             "bn_dpiup": "DPI +", "bn_dpidn": "DPI −", "bn_sniper": "Botón sniper",
             "bn_tiltl": "Rueda a la izquierda", "bn_tiltr": "Rueda a la derecha",
@@ -1177,9 +1592,9 @@ def run_gui():
             "log_soft_off": "Remapeo por software desactivado.",
             "log_soft_fail": "No he podido activar el remapeo por software.",
             "sb_middle": "Pulsar rueda", "sb_wup": "Rueda arriba", "sb_wdn": "Rueda abajo",
-            "sb_x2": "Lateral izquierdo arriba (adelante)", "sb_x1": "Lateral izquierdo abajo (atrás)",
+            "sb_x2": "Lateral izquierdo, adelante", "sb_x1": "Lateral izquierdo, atrás",
             "sb_tiltl": "Rueda inclinada a la izquierda", "sb_tiltr": "Rueda inclinada a la derecha",
-            "bn_rside_up": "Lateral derecho arriba", "bn_rside_dn": "Lateral derecho abajo",
+            "bn_rside_up": "Lateral derecho, arriba", "bn_rside_dn": "Lateral derecho, abajo",
             "map_hdr_rep4": "Botones que el ratón avisa al programa (necesitan «El programa controla los perfiles» activado en Opciones):",
             "act_default": "Función normal", "act_default_rep4": "Por defecto ({act})", "act_lclick": "Clic izquierdo", "act_rclick": "Clic derecho",
             "act_mclick": "Clic central", "act_back": "Atrás", "act_forward": "Adelante",
@@ -1199,6 +1614,119 @@ def run_gui():
             "dlg_exit_msg": "¿Quieres grabar tus perfiles en la memoria del ratón antes de salir?\n\nAsí los tendrás con el programa cerrado o en otro PC (son unos pasos guiados, uno por color).\n\nSí = grabar y salir · No = salir sin grabar · Cancelar = no salir",
         },
         "en": {
+            # --- v1.3.0 ---
+            "log_blink_unknown": "Blink skipped: the app doesn't know the LED's current state yet. Turn it on or off once in Lighting and it will work.",
+            "model_auto": "Auto-detect (any Razer)",
+            "grp_battery": "Battery", "grp_appearance": "Appearance", "grp_sniper": "Sniper",
+            "batt_alert_title": "Battery alerts",
+            "batt_alert_desc": "Status pop-ups.",
+            "batt_full_title": "Notify when fully charged",
+            "batt_full_desc": "A pop-up when the battery reaches 100 % while charging.",
+            "batt_test_btn": "Test",
+            "ba_level": "Battery level", "ba_low": "Battery low", "ba_crit": "Battery very low · plug it in now",
+            "ba_charging": "Charging", "ba_full": "Fully charged", "ba_full_sub": "You can unplug it.",
+            "log_batt_alert": "Battery alert: {pct} %",
+            "theme_title": "Theme", "theme_desc": "Coming soon.", "theme_basic": "Basic",
+            "dark_title": "Dark mode", "dark_desc": "Turn it off to use light mode.",
+            "theme_restart_title": "Restart to apply the theme",
+            "theme_restart_desc": "The app closes and opens again by itself. The mouse loses nothing.",
+            "theme_restart_btn": "Restart now",
+            "themes_custom_title": "Custom themes",
+            "themes_custom_desc": ".json files with colors and the shape of the parts. The folder has a template and an example.",
+            "themes_custom_btn": "Open folder",
+            "nav_kofi": "Spot me a scoop",
+            "btn_disabled_note": "Turn remapping on to edit the buttons.",
+            "log_themes_folder": "Themes folder: {path}",
+            "mv_unl_title": "Mediavida mode unlocked!",
+            "mv_unl_sub": "You can turn it off in Settings, under Theme.", "mv_unl_ok": "OK",
+            "nav_mv_spy": "Spy", "nav_mv_thread": "Mediavida thread",
+            "log_mv_on": "Mediavida mode turned on.",
+            "log_restart": "Restarting to apply the theme...",
+            "blink_title": "Blink the logo on profile change",
+            "blink_desc": "Three pulses in the profile's colour, then it goes back to how it was.",
+            "blink_test": "Test", "grp_blink": "Profile indicator",
+            "log_blink_fail": "The LED doesn't accept temporary colours: blinking is turned off.",
+            "sniper_title": "Sniper DPI",
+            "sniper_desc": "While you hold the button you assign \u201cSniper\u201d to, the mouse drops to this DPI.",
+            "act_sniper": "Sniper (DPI while held)",
+            "log_sniper_on": "Sniper on \u2192 {x} DPI", "log_sniper_off": "Sniper released \u2192 {x} DPI",
+            "err_sniper": "Sniper DPI must be between {lo} and {hi}.",
+            "tray_profiles": "Profiles",
+            "wl_title": "Welcome", "wl_sub": "Three things before you start",
+            "wl_1": "Close Razer Synapse completely (services included) or uninstall it. If it's running, it can block the commands.",
+            "wl_2": "Plug in your mouse (or its dongle). The app finds it by itself; the sidebar tells you when it's connected.",
+            "wl_3": "Your profiles live in the app. While it's open, the mouse's profile and DPI buttons switch them.",
+            "wl_btn": "Got it",
+            "wn_title": "What's new in v{v}", "wn_link": "What's new", "wn_desc": "See what changed in this version.",
+            "wn_show": "View",
+            # --- v1.2.0: Windows 11 Settings-style interface ---
+            "nav_profiles": "Profiles", "nav_lighting": "Lighting", "nav_buttons": "Buttons",
+            "nav_settings": "Settings", "nav_log": "Log", "nav_about": "About",
+            "active_hdr": "Active profile",
+            "active_desc": "The mouse's profile button goes to the next one; DPI down goes back.",
+            "active_small": "Profile {n} · {color} LED",
+            "my_profiles_hdr": "Your profiles",
+            "prof_led_desc": "{color} LED", "prof_off_desc": "{color} LED · no DPI, skipped",
+            "btn_use": "Use", "lbl_in_use": "In use", "ph_off": "Off",
+            "poll_title": "Polling rate",
+            "poll_desc": "How often the mouse reports to the PC. Applied instantly.",
+            "btn_burn_dots": "Write to mouse…", "link_reset": "Reset values",
+            "led_title": "Logo LED", "led_desc": "Turning it on brings back the last colour.",
+            "color_hdr": "Colour", "color_cur": "Current colour",
+            "color_cur_desc": "Press Choose to open the colour picker.",
+            "color_pick_btn": "Choose…", "picker_title": "Choose a colour", "picker_bright": "Brightness",
+            "picker_new": "New", "picker_cur": "Current",
+            "picker_note": "Dark shades show on the LED as the same colour, just dimmer.",
+            "color_quick": "Quick colours", "bright_hdr": "Brightness", "bright_title": "Intensity",
+            "soft_title": "Software remapping",
+            "soft_desc": "Only while the app is open, and not saved to the mouse yet. Some anti-cheats may detect it: turn it off when playing with them.",
+            "soft_desc_na": "Only available on Windows.",
+            "grp_win_btns": "Standard buttons", "grp_mouse_btns": "Special buttons",
+            "grp_mouse_note": "Handled by the mouse itself; they need control mode", "pressed": "Pressed",
+            "grp_mouse": "Mouse", "grp_system": "System", "grp_updates": "Updates",
+            "model_title": "Model", "model_desc": "\u201cAuto-detect\u201d works for any Razer.",
+            "ctrl_title": "The app controls the profiles",
+            "ctrl_desc": "Like Synapse. If you turn it off, the profile is inferred from the DPI.",
+            "notify_title": "Notify profile changes",
+            "notify_desc": "Pop-up at the bottom right for 2 seconds.",
+            "ask_exit_title": "On exit, offer to write to the mouse",
+            "ask_exit_desc": "Only if the profiles have changed.",
+            "tray_title": "Minimize to the system tray", "tray_desc": "Keeps working next to the clock.",
+            "autostart_title": "Start with Windows", "autostart_desc": "Opens minimized and connects by itself.",
+            "autostart_desc_na": "Only available on Windows.",
+            "lang_title": "Language",
+            "updt_latest": "You're up to date", "updt_checking": "Checking for updates…",
+            "updt_new": "New version available: {tag}", "updt_err": "Couldn't check",
+            "updt_idle": "Updates", "updt_dl": "Downloading {tag}…",
+            "upd_check_btn": "Check for updates",
+            "upd_start_title": "Check for updates on startup",
+            "upd_start_desc": "One request to GitHub. No telemetry.",
+            "on": "On", "off": "Off",
+            "log_title": "Log",
+            "log_desc": "What the app is doing. If something goes wrong, this is what to look at. Always in English, so it can be read when reporting a bug.",
+            "btn_copy": "Copy", "btn_report_plain": "Report a bug",
+            "report_desc": "Opens a GitHub issue with the version, the model and these lines. Nothing is sent until you publish it.",
+            "log_copied": "Log copied to the clipboard.",
+            "about_app_desc": "Lightweight configuration tool for Razer mice, without Synapse. Talks directly to the mouse: no intrusive background services, no account and no drivers to install.",
+            "links_hdr": "Links", "link_repo": "Source code on GitHub", "why_hdr": "Why it exists",
+            "link_openrazer_desc": "The reverse engineering of the Razer protocol this program is based on.",
+            "link_kofi_desc": "Ko-fi, if you find it useful.",
+            "license_hdr": "License", "license_title": "GPL-3.0",
+            "license_desc": "Free software, provided without warranty. Independent project, not affiliated with Razer. \u201cRazer\u201d, \u201cSynapse\u201d and \u201cChroma\u201d are trademarks of Razer Inc.",
+            "searching": "Looking for the mouse…", "searching_desc": "Plug it in and close Razer Synapse.",
+            "conn_only": "Connected", "conn_batt": "Connected · {pct} %",
+            "conn_batt_chg": "Connected · {pct} % · charging",
+            "toast_led": "Profile {n} · {color} LED",
+            "tip_profile": "Profile {n} · {x} DPI", "tip_batt": "Battery {pct} %",
+            "tip_batt_chg": "Battery {pct} % (charging)",
+            "burn_step2": "Step {n} of {total}",
+            "burn_msg_a": "Press the profile button under the mouse until the LED turns ",
+            "burn_msg_b": ". Then click \u201cWrite this profile\u201d.",
+            "burn_will": "Will be written", "burn_will_val": "{x} DPI · Profile {n}",
+            "burn_item": "Profile {n} ({color}) · {x} DPI, {state}",
+            "burn_checked": "checked", "burn_unchecked": "unconfirmed",
+            "led_red": "red", "led_green": "green", "led_blue": "blue",
+            "led_turq": "turquoise", "led_yellow": "yellow",
             "status_disc": "Looking for the mouse…",
             "status_conn": "Connected · {name}",
             "model_lbl": "Model:",
@@ -1267,6 +1795,7 @@ def run_gui():
             "log_fw": "Firmware: v{a}.{b}",
             "log_fw_err": "(firmware not read: {e})",
             "log_batt": "Battery {pct}%{chg}",
+            "log_batt_doubt": "Odd battery reading ({pct} %): checking again.",
             "log_dpi_cur": "Current DPI: {x} × {y}",
             "log_dpi_set": "DPI → {x} ({st}){tag}",
             "tag_saved": "  [saved]",
@@ -1309,8 +1838,8 @@ def run_gui():
             "upd_err": "Couldn't check (offline?).",
             "upd_downloading": "Downloading {tag}...",
             "help_hdr": "Help",
-            "btn_report": "\U0001F41E  Report a bug",
-            "bug_link": "\U0001F41E Report a bug",
+            "btn_report": "Report a bug",
+            "bug_link": "Report a bug",
             "dlg_upd_title": "Update available",
             "dlg_upd_msg": "A new version is available ({tag}); you have v{v}.\n\nDownload it now? It will be saved next to the current program and your settings are kept.",
             "dlg_upd_script": "You're running the Python script: the new version's page will open so you can download the code.",
@@ -1336,7 +1865,7 @@ def run_gui():
             "prof_wait": "Looking for the mouse… (plug it in and close Razer Synapse)",
             "prof_learning": "Learning your profiles: press the mouse's profile button until you've gone all the way round ({n}/5)",
             "prof_active": "Active profile: Profile {n} · {x} DPI",
-            "prof_unknown": "DPI {x} doesn't match your profiles · \u201cReset profiles\u201d to relearn",
+            "prof_unknown": "DPI {x} doesn't match your profiles · \u201cReset values\u201d to relearn",
             "btn_apply_prof": "Apply DPI to active profile",
             "mouse_hdr": "Mouse",
             "btn_reconnect": "Reconnect",
@@ -1347,7 +1876,7 @@ def run_gui():
             "log_learn_done": "Profiles learned ({n}). From now on it runs on its own.",
             "log_prof_changed": "Profile {n} · {x} DPI",
             "log_prof_updated": "Profile {n} now has {x} DPI",
-            "log_prof_unknown": "DPI {x} doesn't match any profile. If you changed your profiles, click \u201cReset profiles\u201d.",
+            "log_prof_unknown": "DPI {x} doesn't match any profile. If you changed your profiles, click \u201cReset values\u201d.",
             "log_dpi_applied": "Profile {n} → {x} DPI ({st}), saved to the mouse",
             "log_dpi_applied_nop": "DPI → {x} ({st})",
             "log_dup": "Warning: Profile {n} already has {x} DPI; with two identical profiles I can't tell them apart.",
@@ -1405,7 +1934,7 @@ def run_gui():
             "log_soft_off": "Software remapping disabled.",
             "log_soft_fail": "Couldn't enable software remapping.",
             "sb_middle": "Wheel click", "sb_wup": "Wheel up", "sb_wdn": "Wheel down",
-            "sb_x2": "Left side, upper (forward)", "sb_x1": "Left side, lower (back)",
+            "sb_x2": "Left side, forward", "sb_x1": "Left side, back",
             "sb_tiltl": "Wheel tilt left", "sb_tiltr": "Wheel tilt right",
             "bn_rside_up": "Right side, upper", "bn_rside_dn": "Right side, lower",
             "map_hdr_rep4": "Buttons the mouse reports to the app (need \u201cThe app controls the profiles\u201d enabled in Settings):",
@@ -1434,9 +1963,18 @@ def run_gui():
     }
 
     presets = load_presets()
-    if not acquire_single_instance():
+    first_run = not presets            # sin configuracion previa = primera vez que se abre
+    RESTARTED = "--restarted" in sys.argv          # reabierto por el propio programa (tema)
+    _got = acquire_single_instance()
+    if not _got and RESTARTED:                     # la instancia anterior aun se esta cerrando
+        for _ in range(25):
+            release_single_instance(); time.sleep(0.2)
+            _got = acquire_single_instance()
+            if _got:
+                break
+    if not _got:
         _tmp = tk.Tk(); _tmp.withdraw()
-        if presets.get("lang", "es") == "en":
+        if presets.get("lang", "en") == "en":
             messagebox.showinfo("Non-Synapse-Mouse",
                 "Non-Synapse-Mouse is already running.\n"
                 "Look for it in the system tray (next to the clock).")
@@ -1447,8 +1985,14 @@ def run_gui():
         _tmp.destroy()
         return
     mouse = RazerMouse()
-    lang = [presets.get("lang", "es")]          # idioma activo (holder mutable)
-    set_core_lang(lang[0])                       # los mensajes del nucleo siguen al idioma
+    if not presets.get("lang_en_default"):
+        # v1.3.0: el ingles pasa a ser el idioma por defecto. Una sola vez se
+        # restablece a ingles (versiones anteriores guardaban 'es' sin que lo
+        # eligieras); desde ahi, el idioma que elijas se respeta siempre.
+        presets["lang"] = "en"; presets["lang_en_default"] = True
+        save_presets(presets)
+    lang = [presets.get("lang", "en")]          # idioma activo (holder mutable)
+    set_core_lang("en")                          # el nucleo solo escribe en el registro: ingles
 
     def tr(key, **kw):
         """Texto en el idioma activo. Si falta la clave, cae al espanol y luego
@@ -1456,80 +2000,287 @@ def run_gui():
         s = LANG.get(lang[0], {}).get(key) or LANG["es"].get(key, key)
         return s.format(**kw) if kw else s
 
-    def st_name(code):
-        return STATUS_L.get(lang[0], STATUS_L["es"]).get(code, hex(code))
+    def trl(key, **kw):
+        """Texto para el REGISTRO: siempre en ingles (asi un registro pegado en
+        GitHub se entiende venga de donde venga, y no cambia con el idioma)."""
+        s = LANG["en"].get(key) or LANG["es"].get(key, key)
+        return s.format(**kw) if kw else s
+
+    def st_name(code, lng=None):
+        return STATUS_L.get(lng or lang[0], STATUS_L["es"]).get(code, hex(code))
 
     # =====================================================================
-    # 2) PALETA PLANA PROFESIONAL (colores solidos, sin degradados)
+    # 2) TEMAS
+    #    Un tema = COLORES (tokens) + FORMA de las piezas + fuente opcional.
+    #    Nada de la interfaz lleva colores escritos a mano: todo sale de aqui.
+    #    Las piezas redondeadas (interruptores, ES|EN, puntos, deslizadores...)
+    #    las dibuja el "dibujante" (seccion 3b) con suavizado y con la forma
+    #    que diga el tema: round | square | chamfer | diamond.
+    #
+    #    Temas propios: archivos .json en %APPDATA%\Non-Synapse-Mouse\themes
+    #    (ver plantilla que se crea al pulsar "Abrir carpeta de temas"). Un tema
+    #    propio parte de uno base y solo cambia lo que diga. Se aplica al reiniciar.
     # =====================================================================
-    BG      = "#1e2128"   # fondo de la ventana
-    PANEL   = "#252932"   # paneles / pestanas sin seleccionar
-    ENTRY   = "#2b303a"   # campos de texto y desplegables
-    FG      = "#e4e6eb"   # texto principal
-    MUTED   = "#8b919c"   # texto secundario
-    ACCENT  = "#3d7dff"   # color de acento (botones)
-    ACCENT2 = "#5590ff"   # acento al pasar/pulsar
-    BORDER  = "#333844"   # bordes y separadores
-    GREEN   = "#3fb950"   # perfil activo / LED encendido / batería alta
-    YELL    = "#d9a441"   # batería media
-    RED     = "#e5534b"   # batería baja
-    LOGBG   = "#161920"   # fondo del log
-    LOGFG   = "#9fe3c8"   # texto del log
+    THEME_COLOR_KEYS = {
+        "BG": "fondo de la ventana", "CARD": "tarjetas-fila", "CARD_BORDER": "borde de las tarjetas",
+        "CTRL": "botones, combos, cajas; item de navegacion activo", "CTRL_HOVER": "control al pasar el raton",
+        "CTRL_BORDER": "borde de los controles", "INPUT_LINE": "linea inferior de las cajas de texto",
+        "INPUT_FOCUS": "caja de texto con foco", "FG": "texto principal", "FG2": "texto secundario",
+        "FG3": "texto terciario / desactivado", "ACCENT": "acento", "ACCENT_HOVER": "acento al pasar el raton",
+        "ON_ACCENT": "texto sobre el acento", "LOG_BG": "fondo del registro", "LOG_BORDER": "borde del registro",
+        "SEG_OFF": "segmento apagado (barras)", "LOW_BATT": "bateria critica", "WARN_BATT": "bateria baja",
+        "SCROLL": "barra de desplazamiento", "SCROLL_HOVER": "barra de desplazamiento (raton encima)",
+        "SWITCH_OFF": "borde del interruptor apagado", "KNOB_OFF": "bolita del interruptor apagado",
+        "DISABLED": "piezas desactivadas", "SLIDER_TRACK": "pista del deslizador",
+        "SELECT_BG": "seleccion de texto", "PANEL": "recuadro interior de dialogos",
+        "PANEL_BORDER": "borde del recuadro interior", "PROG_OFF": "pasos pendientes (barra de progreso)",
+        "POPUP_BORDER": "borde de los avisos flotantes", "SWATCH_BORDER": "borde de las muestras de color",
+        "LINK": "enlaces y texto en color de acento",
+    }
+    THEME_SHAPE_DEFAULT = {"style": "round", "corner": 6, "border": 1, "glow": False}
+    THEME_STYLES = ("round", "square", "chamfer", "diamond")
+    BUILTIN_THEMES = {
+        "basic": {
+            "name": {"es": "Básico", "en": "Basic"},
+            "shape": dict(THEME_SHAPE_DEFAULT),
+            "dark": {                       # estilo Configuracion de Windows 11, modo oscuro
+                "BG": "#202020", "CARD": "#2B2B2B", "CARD_BORDER": "#1D1D1D",
+                "CTRL": "#2D2D2D", "CTRL_HOVER": "#323232", "CTRL_BORDER": "#353535",
+                "INPUT_LINE": "#8A8A8A", "INPUT_FOCUS": "#1F1F1F",
+                "FG": "#FFFFFF", "FG2": "#C8C8C8", "FG3": "#9D9D9D",
+                "ACCENT": "#44D62C", "ACCENT_HOVER": "#3CBF27", "ON_ACCENT": "#000000",
+                "LOG_BG": "#1C1C1C", "LOG_BORDER": "#2E2E2E", "SEG_OFF": "#3A3A3A",
+                "LOW_BATT": "#FF2E4D", "WARN_BATT": "#FFB900",
+                "SCROLL": "#4A4A4A", "SCROLL_HOVER": "#6A6A6A",
+                "SWITCH_OFF": "#9D9D9D", "KNOB_OFF": "#CFCFCF", "DISABLED": "#5A5A5A",
+                "SLIDER_TRACK": "#9A9A9A", "SELECT_BG": "#3A3A3A",
+                "PANEL": "#232323", "PANEL_BORDER": "#333333", "PROG_OFF": "#454545",
+                "POPUP_BORDER": "#3A3A3A", "SWATCH_BORDER": "#3A3A3A", "LINK": "#44D62C",
+            },
+            "light": {                      # estilo Configuracion de Windows 11, modo claro
+                "BG": "#F3F3F3", "CARD": "#FBFBFB", "CARD_BORDER": "#E5E5E5",
+                "CTRL": "#FDFDFD", "CTRL_HOVER": "#F4F4F4", "CTRL_BORDER": "#D9D9D9",
+                "INPUT_LINE": "#868686", "INPUT_FOCUS": "#FFFFFF",
+                "FG": "#1B1B1B", "FG2": "#5C5C5C", "FG3": "#8A8A8A",
+                "ACCENT": "#3CBF27", "ACCENT_HOVER": "#35AA22", "ON_ACCENT": "#000000",
+                "LOG_BG": "#FFFFFF", "LOG_BORDER": "#E5E5E5", "SEG_OFF": "#DCDCDC",
+                "LOW_BATT": "#D13438", "WARN_BATT": "#C98A00",
+                "SCROLL": "#C2C2C2", "SCROLL_HOVER": "#9E9E9E",
+                "SWITCH_OFF": "#5C5C5C", "KNOB_OFF": "#5C5C5C", "DISABLED": "#BDBDBD",
+                "SLIDER_TRACK": "#8A8A8A", "SELECT_BG": "#CCE4F7",
+                "PANEL": "#F3F3F3", "PANEL_BORDER": "#E0E0E0", "PROG_OFF": "#D6D6D6",
+                "POPUP_BORDER": "#D0D0D0", "SWATCH_BORDER": "#C8C8C8", "LINK": "#1F7A12",
+            },
+        },
+    }
+    # Tema secreto: solo aparece tras el codigo Konami (modo Mediavida). Oscuro
+    # como el del foro: casi negro, tarjetas grafito, grises calidos y el naranja
+    # amarillento de sus detalles. El foro no tiene modo claro: se usa el mismo.
+    _MV_PAL = {
+                "BG": "#0B0A09", "CARD": "#242323", "CARD_BORDER": "#111111",
+                "CTRL": "#2B2B2B", "CTRL_HOVER": "#343332", "CTRL_BORDER": "#3A3836",
+                "INPUT_LINE": "#6E655A", "INPUT_FOCUS": "#1C1B1A",
+                "FG": "#D0D0D0", "FG2": "#9E968F", "FG3": "#756E66",
+                "ACCENT": "#FFA804", "ACCENT_HOVER": "#E89600", "ON_ACCENT": "#111111",
+                "LOG_BG": "#111111", "LOG_BORDER": "#242323", "SEG_OFF": "#2B2B2B",
+                "LOW_BATT": "#E5484D", "WARN_BATT": "#D66017",
+                "SCROLL": "#3A3836", "SCROLL_HOVER": "#4D4A47",
+                "SWITCH_OFF": "#756E66", "KNOB_OFF": "#9E968F", "DISABLED": "#3F3C39",
+                "SLIDER_TRACK": "#4A4643", "SELECT_BG": "#4D2100",
+                "PANEL": "#1A1918", "PANEL_BORDER": "#2B2B2B", "PROG_OFF": "#3A3836",
+                "POPUP_BORDER": "#4D2100", "SWATCH_BORDER": "#3A3836", "LINK": "#FFA804",
+            }
+    BUILTIN_THEMES["mediavida"] = {
+        "name": {"es": "Mediavida", "en": "Mediavida"},
+        "shape": dict(THEME_SHAPE_DEFAULT),
+        "dark": dict(_MV_PAL), "light": dict(_MV_PAL), "secret": True,
+    }
+    THEMES_DIR = os.path.join(CONFIG_DIR, "themes")
+    theme_errors = []                                   # se escriben en el registro al arrancar
+
+    def _valid_hex(v):
+        return isinstance(v, str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", v) is not None
+
+    def load_user_themes():
+        """Lee los .json de la carpeta de temas. Cada uno parte de un tema base
+        (por defecto 'basic') y sobrescribe solo lo que trae. Lo que no se
+        entiende se ignora (y se apunta en el registro)."""
+        out = {}
+        try:
+            files = sorted(f for f in os.listdir(THEMES_DIR) if f.lower().endswith(".json"))
+        except Exception:
+            return out
+        for fn in files:
+            if fn.startswith("_"):
+                continue                                 # plantilla / ejemplo: no son temas
+            key = "user:" + os.path.splitext(fn)[0].lower()
+            try:
+                with open(os.path.join(THEMES_DIR, fn), encoding="utf-8") as f:
+                    data = json.load(f)
+                base = BUILTIN_THEMES.get(str(data.get("base", "basic")), BUILTIN_THEMES["basic"])
+                th = {"name": data.get("name") or os.path.splitext(fn)[0],
+                      "shape": dict(base["shape"]), "file": fn}
+                sh = data.get("shape") or {}
+                if sh.get("style") in THEME_STYLES: th["shape"]["style"] = sh["style"]
+                for k_ in ("corner", "border"):
+                    if isinstance(sh.get(k_), (int, float)) and 0 <= sh[k_] <= 40:
+                        th["shape"][k_] = float(sh[k_])
+                if isinstance(sh.get("glow"), bool): th["shape"]["glow"] = sh["glow"]
+                if isinstance(data.get("font"), str): th["font"] = data["font"]
+                for mode in ("dark", "light"):
+                    pal = dict(base[mode])
+                    for k_, v in (data.get(mode) or {}).items():
+                        if k_ in THEME_COLOR_KEYS and _valid_hex(v):
+                            pal[k_] = v.upper()
+                        else:
+                            theme_errors.append(f"Theme {fn}: ignored {mode}.{k_}={v!r}")
+                    th[mode] = pal
+                out[key] = th
+            except Exception as e:
+                theme_errors.append(f"Theme {fn}: not loaded ({e})")
+        return out
+
+    THEMES = dict(BUILTIN_THEMES)
+    THEMES.update(load_user_themes())
+
+    def theme_label(k):
+        n = THEMES[k]["name"]
+        return n.get(lang[0]) or n.get("en") or k if isinstance(n, dict) else str(n)
+
+    MV_UNLOCKED = bool(presets.get("mv_unlocked"))      # modo Mediavida desbloqueado
+    THEME_NAME = presets.get("theme", "basic")
+    if THEME_NAME not in THEMES or (THEMES[THEME_NAME].get("secret") and not MV_UNLOCKED):
+        THEME_NAME = "basic"
+    MV_ACTIVE = MV_UNLOCKED and THEME_NAME == "mediavida"  # se ve el modo Mediavida
+    THEME_MODE = "light" if presets.get("theme_mode") == "light" else "dark"
+    THEME = THEMES[THEME_NAME]
+    SHAPE = THEME["shape"]
+    T = THEME[THEME_MODE]                               # paleta activa
+    BG, CARD, CARD_BORDER = T["BG"], T["CARD"], T["CARD_BORDER"]
+    CTRL, CTRL_HOVER, CTRL_BORDER = T["CTRL"], T["CTRL_HOVER"], T["CTRL_BORDER"]
+    INPUT_LINE, INPUT_FOCUS = T["INPUT_LINE"], T["INPUT_FOCUS"]
+    FG, FG2, FG3 = T["FG"], T["FG2"], T["FG3"]
+    ACCENT, ACCENT_HOVER, ON_ACCENT = T["ACCENT"], T["ACCENT_HOVER"], T["ON_ACCENT"]
+    LOG_BG, LOG_BORDER, SEG_OFF, LOW_BATT = T["LOG_BG"], T["LOG_BORDER"], T["SEG_OFF"], T["LOW_BATT"]
+    WARN_BATT = T["WARN_BATT"]
+    # compatibilidad con nombres antiguos que usa la logica copiada
+    GREEN, MUTED = ACCENT, FG3
+
+    # Escalado: el proceso se declara "DPI aware" ANTES de crear la ventana, y
+    # todas las medidas en px del diseno pasan por px() (base 96 ppp).
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try: ctypes.windll.user32.SetProcessDPIAware()
+            except Exception: pass
 
     root = tk.Tk()
+    root.withdraw()                                  # se muestra al terminar de montar
     root.title(f"{APP_NAME} v{APP_VERSION}")
-    # icono de la ventana/barra de tareas: icono.ico empaquetado en el .exe
-    # (PyInstaller --add-data) o junto al script. Si no esta, se queda el de Tk.
     _ico_path = os.path.join(getattr(sys, "_MEIPASS", _BASE_DIR), "icono.ico")
     if os.path.exists(_ico_path):
         try: root.iconbitmap(_ico_path)
         except Exception: pass
     root.configure(bg=BG)
 
-    # --- estilos ttk (tema "clam" es el mas personalizable) --------------
+    try:
+        SCALE = max(1.0, root.winfo_fpixels("1i") / 96.0)
+    except Exception:
+        SCALE = 1.0
+
+    def px(n):
+        return int(round(n * SCALE))
+
+    # --- tipografia: todo Segoe (viene con Windows); si no esta, cae a otra ---
+    import tkinter.font as tkfont
+    _fams = set(tkfont.families(root))
+
+    def _pick(*names):
+        for n in names:
+            if n in _fams:
+                return n
+        return None
+
+    F_TEXT = _pick("Segoe UI Variable Text", "Segoe UI") or "TkDefaultFont"
+    _semi = _pick("Segoe UI Semibold", "Segoe UI Variable Text Semibold")
+    _disp = _pick("Segoe UI Variable Display Semibold", "Segoe UI Semibold")
+    _tfont = THEME.get("font")
+    if _tfont and _tfont in _fams:                   # fuente del tema (si esta instalada)
+        F_TEXT, _semi, _disp = _tfont, None, None
+    F_MONO = _pick("Cascadia Mono", "Consolas", "DejaVu Sans Mono") or "TkFixedFont"
+    F_ICON = _pick("Segoe Fluent Icons", "Segoe MDL2 Assets")   # None -> sin iconos
+
+    def font(size, semibold=False, display=False):
+        """size en px del diseno -> fuente Tk en pixeles reales (negativo)."""
+        if display and _disp:
+            return (_disp, -px(size))
+        if semibold:
+            return (_semi, -px(size)) if _semi else (F_TEXT, -px(size), "bold")
+        return (F_TEXT, -px(size))
+
+    FONT_TITLE = font(28, display=True)
+    FONT_GROUP = font(14, semibold=True)
+    FONT_ROW   = font(14)
+    FONT_DESC  = font(12)
+    FONT_BIG   = font(20, semibold=True)
+    FONT_LOG   = (F_MONO, -px(12.5))
+
+    def icon_font(size):
+        return (F_ICON, -px(size)) if F_ICON else None
+
+    # codigos de iconos (Segoe Fluent Icons / MDL2 Assets)
+    IC = {"profiles": "\uE81E", "lighting": "\uEA80", "buttons": "\uE8AB", "settings": "\uE713",
+          "log": "\uE8FD", "about": "\uE946", "refresh": "\uE72C", "copy": "\uE8C8",
+          "open": "\uE8A7", "download": "\uE896", "warn": "\uE7BA", "power": "\uE7E8",
+          "bright": "\uE706", "color": "\uE790", "lang": "\uE774", "sync": "\uE895",
+          "bell": "\uEA8F", "monitor": "\uE7F4", "check": "\uE73E", "code": "\uE943",
+          "doc": "\uE8A5", "speed": "\uEC4A", "heart": "\uEB51", "view": "\uE890"}
+
+    def batt_glyph(pct, chg):
+        """Icono de bateria (Battery0-10 / BatteryCharging0-10)."""
+        n = max(0, min(10, int(round(pct / 10.0))))
+        if chg:
+            return "\uE83E" if n == 10 else chr(0xE85A + n)
+        return "\uE83F" if n == 10 else chr(0xE850 + n)
+
+    # --- estilos ttk (tema "clam", el mas personalizable) ---------------------
     st = ttk.Style()
     try: st.theme_use("clam")
     except Exception: pass
-    st.configure(".", background=BG, foreground=FG, fieldbackground=ENTRY,
-                 bordercolor=BORDER, font=("Segoe UI", 10))
+    st.configure(".", background=BG, foreground=FG, fieldbackground=CTRL,
+                 bordercolor=CTRL_BORDER, font=FONT_ROW, focuscolor=BG)
     st.configure("TFrame", background=BG)
-    st.configure("TLabel", background=BG, foreground=FG)
-    st.configure("Muted.TLabel", background=BG, foreground=MUTED)
-    st.configure("Title.TLabel", background=BG, foreground=FG, font=("Segoe UI", 15, "bold"))
-    st.configure("H.TLabel", background=BG, foreground=FG, font=("Segoe UI", 11, "bold"))
-    st.configure("Active.TLabel", background=BG, foreground=GREEN, font=("Segoe UI", 10, "bold"))
-    st.configure("TButton", background=ACCENT, foreground="#ffffff", relief="flat",
-                 borderwidth=0, focuscolor=BG, padding=(8, 4), font=("Segoe UI", 10))
-    st.map("TButton", background=[("pressed", ACCENT2), ("active", ACCENT2), ("disabled", PANEL)],
-           foreground=[("disabled", MUTED)])
-    st.configure("TCheckbutton", background=BG, foreground=FG, focuscolor=BG)
-    st.map("TCheckbutton", background=[("active", BG)],
-           indicatorcolor=[("selected", ACCENT), ("!selected", ENTRY)])
-    st.configure("TEntry", fieldbackground=ENTRY, foreground=FG, bordercolor=BORDER,
-                 insertcolor=FG, relief="flat", padding=4)
-    st.configure("TCombobox", fieldbackground=ENTRY, background=PANEL, foreground=FG,
-                 arrowcolor=FG, bordercolor=BORDER, relief="flat", padding=3)
-    st.map("TCombobox", fieldbackground=[("readonly", ENTRY)], foreground=[("readonly", FG)])
-    st.configure("Horizontal.TScale", background=ACCENT, troughcolor=ENTRY, borderwidth=0)
-    st.configure("TSeparator", background=BORDER)
-    st.configure("TNotebook", background=BG, bordercolor=BORDER, borderwidth=0, tabmargins=(6, 6, 6, 0))
-    st.configure("TNotebook.Tab", background=PANEL, foreground=MUTED, padding=(14, 6),
-                 borderwidth=0, focuscolor=BG, font=("Segoe UI", 10, "bold"))
-    st.map("TNotebook.Tab", background=[("selected", BG)], foreground=[("selected", FG)])
-    st.configure("About.TButton", background=PANEL, foreground=FG, relief="flat",
-                 borderwidth=0, focuscolor=BG, padding=(2, 0), font=("Segoe UI", 11, "bold"))
-    st.map("About.TButton", background=[("active", ACCENT), ("pressed", ACCENT)],
-           foreground=[("active", "#ffffff")])
-    st.configure("Kofi.TButton", background="#29abe0", foreground="#ffffff", relief="flat",
-                 borderwidth=0, focuscolor=BG, padding=(10, 7), font=("Segoe UI", 10, "bold"))
-    st.map("Kofi.TButton", background=[("active", "#3cc0f5"), ("pressed", "#3cc0f5")])
-
-    # el desplegable (popup) del combobox es un Listbox tk: forzarlo al tema
-    root.option_add("*TCombobox*Listbox.background", ENTRY)
+    st.configure("Btn.TButton", background=CTRL, foreground=FG, bordercolor=CTRL_BORDER,
+                 lightcolor=CTRL, darkcolor=CTRL, relief="flat", padding=(px(12), px(5)),
+                 font=FONT_ROW, focuscolor=CTRL)
+    st.map("Btn.TButton", background=[("disabled", BG), ("pressed", CARD), ("active", CTRL_HOVER)],
+           foreground=[("disabled", FG3)], lightcolor=[("active", CTRL_HOVER)],
+           darkcolor=[("active", CTRL_HOVER)])
+    st.configure("Accent.TButton", background=ACCENT, foreground=ON_ACCENT, bordercolor=ACCENT,
+                 lightcolor=ACCENT, darkcolor=ACCENT, relief="flat", padding=(px(12), px(5)),
+                 font=FONT_ROW, focuscolor=ACCENT)
+    st.map("Accent.TButton", background=[("disabled", CTRL), ("pressed", ACCENT_HOVER), ("active", ACCENT_HOVER)],
+           foreground=[("disabled", FG3)], lightcolor=[("active", ACCENT_HOVER)],
+           darkcolor=[("active", ACCENT_HOVER)], bordercolor=[("active", ACCENT_HOVER)])
+    st.configure("TCombobox", fieldbackground=CTRL, background=CTRL, foreground=FG,
+                 arrowcolor=FG2, bordercolor=CTRL_BORDER, lightcolor=CTRL, darkcolor=CTRL,
+                 relief="flat", padding=(px(8), px(4)), arrowsize=px(12))
+    st.map("TCombobox", fieldbackground=[("disabled", CARD), ("readonly", CTRL)],
+           foreground=[("disabled", FG3), ("readonly", FG)], arrowcolor=[("disabled", T["DISABLED"])],
+           background=[("disabled", CARD), ("active", CTRL_HOVER)],
+           selectbackground=[("readonly", CTRL)], selectforeground=[("readonly", FG)])
+    st.configure("Vertical.TScrollbar", background=T["SCROLL"], troughcolor=BG, bordercolor=BG,
+                 lightcolor=T["SCROLL"], darkcolor=T["SCROLL"], arrowcolor=FG3, gripcount=0,
+                 relief="flat", width=px(10))
+    st.map("Vertical.TScrollbar", background=[("active", T["SCROLL_HOVER"])])
+    root.option_add("*TCombobox*Listbox.background", CTRL)
     root.option_add("*TCombobox*Listbox.foreground", FG)
     root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
-    root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+    root.option_add("*TCombobox*Listbox.selectForeground", ON_ACCENT)
     root.option_add("*TCombobox*Listbox.borderWidth", 0)
+    root.option_add("*TCombobox*Listbox.font", FONT_ROW)
 
     # =====================================================================
     # 3) INFRAESTRUCTURA DE IDIOMA (registro + retraduccion)
@@ -1544,79 +2295,934 @@ def run_gui():
         return widget
 
     def reg(cb):
-        """Registra un callback de re-render (para etiquetas dinamicas y
-        pestanas) y lo ejecuta una vez."""
+        """Registra un callback de re-render y lo ejecuta una vez."""
         i18n.append(cb); cb()
 
     def retranslate():
         for cb in i18n:
             try: cb()
             except Exception: pass
-        # tras cambiar textos, reajusta el tamano fijo al nuevo contenido
-        root.update_idletasks()
-        root.geometry(f"{max(480, root.winfo_reqwidth())}x{root.winfo_reqheight()}")
+        root.update_idletasks()                      # tamano fijo: no se recalcula
 
     # =====================================================================
-    # 4) CABECERA: titulo, estado, selector de idioma y boton "?"
+    # 3b) PIEZAS DE INTERFAZ (tarjetas-fila, interruptor, deslizador, caja de
+    #     texto, enlaces, silueta del raton). Todo plano: sin degradados.
     # =====================================================================
-    ttk.Label(root, text="Non-Synapse-Mouse", style="Title.TLabel").pack(pady=(14, 0))
-    status_var = tk.StringVar()
-    ttk.Label(root, textvariable=status_var, style="Muted.TLabel").pack()
-    ttk.Separator(root).pack(fill="x", padx=12, pady=(8, 0))
+    def round_rect(cv, x1, y1, x2, y2, r, **kw):
+        """Rectangulo redondeado en un Canvas (poligono suavizado)."""
+        r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
+        pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+               x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+        return cv.create_polygon(pts, smooth=True, **kw)
 
-    # estado de conexion (dinamico): None -> "sin conectar"; si no, nombre modelo
+    # --- DIBUJANTE: piezas suaves con la forma que diga el tema ---------------
+    # Tk no suaviza los bordes en Windows (de ahi los "dientes de sierra"). Cada
+    # pieza redondeada se dibuja con Pillow 4 veces mas grande, se reduce con
+    # LANCZOS y se pone en el lienzo como imagen con transparencia (vale para
+    # cualquier fondo, claro u oscuro). Se guarda en cache.
+    # La FORMA la decide el tema (SHAPE["style"]):
+    #   round   -> pildoras y circulos (Windows 11)
+    #   square  -> esquinas rectas
+    #   chamfer -> esquinas cortadas en diagonal
+    #   diamond -> rombos y puntas
+    # Tipos de pieza:
+    #   "pill" -> interruptor, ES|EN, pistas de deslizador
+    #   "dot"  -> bolitas, puntos de color, avatar
+    #   "box"  -> rectangulo con esquinas de radio r (muestras, logo, bateria)
+    # Todas las piezas pasan por paint(); para un estilo nuevo basta con
+    # ensenarle la forma a _shape_geom().
+    try:
+        from PIL import Image as _PImage, ImageDraw as _PDraw, ImageFilter as _PFilter, ImageChops as _PChops
+        PAINT_OK = True
+    except Exception:
+        PAINT_OK = False
+    _paint_cache = {}
+    _SS = 4                                          # supermuestreo
+    GP = px(4) if SHAPE.get("glow") else 0           # margen de los lienzos para que el halo no se corte
+
+    def _hex_rgb(h):
+        return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+    def _chamfer(x1, y1, x2, y2, c):
+        return [(x1 + c, y1), (x2 - c, y1), (x2, y1 + c), (x2, y2 - c),
+                (x2 - c, y2), (x1 + c, y2), (x1, y2 - c), (x1, y1 + c)]
+
+    def _shape_geom(kind, x1, y1, x2, y2, r, k=1.0):
+        """Geometria de una pieza segun el estilo del tema. k = escala (para el
+        supermuestreo). Devuelve ('ellipse', None) | ('rrect', radio) | ('poly', puntos)."""
+        w, h = x2 - x1, y2 - y1
+        style = SHAPE.get("style", "round")
+        corner = px(SHAPE.get("corner", 6)) * k
+        if kind == "dot":
+            if style == "round":
+                return ("ellipse", None)
+            if style == "square":
+                return ("rrect", 0)
+            if style == "diamond":
+                cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                return ("poly", [(cx, y1), (x2, cy), (cx, y2), (x1, cy)])
+            return ("poly", _chamfer(x1, y1, x2, y2, min(w, h) * 0.2))       # cuadrado con esquinas cortadas
+        if kind == "pill":
+            if style == "round":
+                return ("rrect", min(w, h) / 2.0)
+            if style == "square":
+                return ("rrect", 0)
+            if style == "diamond":
+                c, cy = min(w, h) / 2.0, (y1 + y2) / 2.0
+                return ("poly", [(x1 + c, y1), (x2 - c, y1), (x2, cy), (x2 - c, y2), (x1 + c, y2), (x1, cy)])
+            return ("poly", _chamfer(x1, y1, x2, y2, min(min(w, h) / 2.0, corner)))
+        # "box"
+        if style == "round":
+            return ("rrect", max(0, min(r, w / 2.0, h / 2.0)))
+        if style == "square" or r <= 0:
+            return ("rrect", 0)
+        return ("poly", _chamfer(x1, y1, x2, y2, min(w / 2.0, h / 2.0, max(r, corner))))
+
+    def _mask(kind, W, H, x1, y1, x2, y2, r, pts=None):
+        """Mascara (L) a tamano supermuestreado de una pieza."""
+        S = _SS
+        m = _PImage.new("L", (W * S, H * S), 0)
+        if x2 - x1 <= 0 or y2 - y1 <= 0:
+            return m
+        d = _PDraw.Draw(m)
+        bx = (x1 * S, y1 * S, x2 * S - 1, y2 * S - 1)
+        if pts is not None:
+            d.polygon([(x * S, y * S) for (x, y) in pts], fill=255)
+            return m
+        g = _shape_geom(kind, bx[0], bx[1], bx[2], bx[3], r * S, k=S)
+        if g[0] == "ellipse":
+            d.ellipse(bx, fill=255)
+        elif g[0] == "rrect":
+            if g[1] > 0:
+                d.rounded_rectangle(bx, radius=g[1], fill=255)
+            else:
+                d.rectangle(bx, fill=255)
+        else:
+            d.polygon(g[1], fill=255)
+        return m
+
+    def _layer(img, color, mask):
+        lay = _PImage.new("RGBA", img.size, _hex_rgb(color) + (0,))
+        lay.putalpha(mask)
+        return _PImage.alpha_composite(img, lay)
+
+    def shape_photo(kind, w, h, fill=None, outline=None, width=0, r=0, glow=None, pts=None):
+        """PhotoImage con alfa de la pieza + margen (pad) que lleva alrededor."""
+        key = (kind, w, h, fill, outline, round(width, 2), round(r, 2), glow,
+               tuple(pts) if pts else None, SHAPE.get("style"), SHAPE.get("corner"))
+        hit = _paint_cache.get(key)
+        if hit is not None:
+            return hit
+        import io
+        pad = px(6) if glow else 0
+        W, H = w + 2 * pad, h + 2 * pad
+        if pts is not None:
+            pts = [(x + pad, y + pad) for (x, y) in pts]
+        outer = _mask(kind, W, H, pad, pad, pad + w, pad + h, r, pts)
+        inner = None
+        if outline and width > 0:
+            inner = _mask(kind, W, H, pad + width, pad + width, pad + w - width, pad + h - width,
+                          max(0, r - width), None if pts is None else pts)
+        outer = outer.resize((W, H), _PImage.LANCZOS)
+        if inner is not None:
+            inner = inner.resize((W, H), _PImage.LANCZOS)
+        img = _PImage.new("RGBA", (W, H), (0, 0, 0, 0))
+        if glow:
+            g = outer.filter(_PFilter.GaussianBlur(pad * 0.55)).point(lambda v: int(v * 0.75))
+            img = _layer(img, glow, g)
+        if inner is not None:
+            if fill:
+                img = _layer(img, fill, inner)
+            img = _layer(img, outline, _PChops.subtract(outer, inner))
+        elif fill:
+            img = _layer(img, fill, outer)
+        buf = io.BytesIO(); img.save(buf, "PNG")
+        ph = tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii"))
+        _paint_cache[key] = (ph, pad)
+        return ph, pad
+
+    def paint(cv, kind, x1, y1, x2, y2, fill=None, outline=None, width=0, r=0, glow=False, tags=()):
+        """Dibuja una pieza suave en el lienzo `cv` ocupando (x1, y1)-(x2, y2).
+        glow=True: halo de neon si el tema lo pide (SHAPE['glow'])."""
+        x1, y1 = int(round(x1)), int(round(y1))
+        w, h = max(1, int(round(x2)) - x1), max(1, int(round(y2)) - y1)
+        gl = (fill or outline) if (glow and SHAPE.get("glow")) else None
+        width = max(0, width)
+        if PAINT_OK:
+            try:
+                ph, pad = shape_photo(kind, w, h, fill, outline, width, r, gl)
+                return cv.create_image(x1 - pad, y1 - pad, image=ph, anchor="nw", tags=tags)
+            except Exception:
+                pass
+        # sin Pillow: primitivas del lienzo (con dientes, pero funciona)
+        g = _shape_geom(kind, x1, y1, x1 + w, y1 + h, r)
+        opts = dict(fill=(fill or ""), outline=(outline or ""), width=(width if outline else 0), tags=tags)
+        if g[0] == "ellipse":
+            return cv.create_oval(x1, y1, x1 + w, y1 + h, **opts)
+        if g[0] == "rrect":
+            if g[1] > 0:
+                return round_rect(cv, x1, y1, x1 + w, y1 + h, g[1], **opts)
+            return cv.create_rectangle(x1, y1, x1 + w, y1 + h, **opts)
+        return cv.create_polygon([c for pt in g[1] for c in pt], **opts)
+
+    def paint_poly(cv, pts, fill, tags=()):
+        """Poligono libre suavizado (p. ej. el rayo de la bateria)."""
+        xs, ys = [p_[0] for p_ in pts], [p_[1] for p_ in pts]
+        x1, y1 = int(math.floor(min(xs))), int(math.floor(min(ys)))
+        w, h = int(math.ceil(max(xs))) - x1 + 1, int(math.ceil(max(ys))) - y1 + 1
+        if PAINT_OK:
+            try:
+                rel = tuple((round(x - x1, 2), round(y - y1, 2)) for (x, y) in pts)
+                ph, _pad = shape_photo("poly", w, h, fill, pts=rel)
+                return cv.create_image(x1, y1, image=ph, anchor="nw", tags=tags)
+            except Exception:
+                pass
+        return cv.create_polygon([c for pt in pts for c in pt], fill=fill, outline="", tags=tags)
+
+    def paint_arc(cv, x1, y1, x2, y2, start, extent, color, width, tags=()):
+        """Arco suavizado (el indicador de 'conectando')."""
+        w, h = int(round(x2 - x1)), int(round(y2 - y1))
+        key = ("arc", w, h, int(start) % 360, int(extent), color, round(width, 2))
+        hit = _paint_cache.get(key)
+        if hit is None and PAINT_OK:
+            try:
+                import io
+                S = _SS
+                m = _PImage.new("L", (w * S, h * S), 0)
+                ww = max(1, int(round(width * S)))
+                # Pillow mide los angulos en sentido horario; Tk, antihorario
+                _PDraw.Draw(m).arc((ww / 2, ww / 2, w * S - ww / 2 - 1, h * S - ww / 2 - 1),
+                                   start=-(start + extent), end=-start, fill=255, width=ww)
+                img = _layer(_PImage.new("RGBA", (w, h), (0, 0, 0, 0)), color,
+                             m.resize((w, h), _PImage.LANCZOS))
+                buf = io.BytesIO(); img.save(buf, "PNG")
+                hit = tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii"))
+                _paint_cache[key] = hit
+            except Exception:
+                hit = None
+        if hit is not None:
+            return cv.create_image(int(round(x1)), int(round(y1)), image=hit, anchor="nw", tags=tags)
+        return cv.create_arc(x1, y1, x2, y2, start=start, extent=extent, style="arc",
+                             outline=color, width=width, tags=tags)
+
+    # --- imagenes de archivo (avatar, logo) ------------------------------------
+    MV_LOGO = None                                      # se fija tras definir resource()
+
+    def resource(name):
+        """Archivo que va dentro del programa (junto al .py o dentro del .exe)."""
+        return os.path.join(getattr(sys, "_MEIPASS", _BASE_DIR), name)
+
+    MV_LOGO = resource("mv_logo.png")                   # va dentro del programa
+
+    def image_frames(path, size, shaped=True, max_frames=150, radius=None):
+        """Lista [(PhotoImage, ms)] de una imagen (GIF animado incluido),
+        recortada en cuadrado, a `size` px y con la forma del tema. [] si falla."""
+        if not PAINT_OK or not path or not os.path.exists(path):
+            return []
+        import io
+        try:
+            from PIL import ImageSequence
+            src = _PImage.open(path)
+            mask = None
+            if shaped:
+                mask = _mask("box", size, size, 0, 0, size, size, radius if radius is not None else px(4)).resize((size, size), _PImage.LANCZOS)
+            out = []
+            for k, fr in enumerate(ImageSequence.Iterator(src)):
+                if k >= max_frames:
+                    break
+                f = fr.convert("RGBA")
+                w, h = f.size
+                side = min(w, h)
+                f = f.crop(((w - side) // 2, (h - side) // 2, (w - side) // 2 + side, (h - side) // 2 + side))
+                f = f.resize((size, size), _PImage.LANCZOS)
+                if mask is not None:
+                    f.putalpha(_PChops.multiply(f.getchannel("A"), mask))
+                buf = io.BytesIO(); f.save(buf, "PNG")
+                ms = fr.info.get("duration", 100) or 100
+                out.append((tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii")),
+                            max(20, int(ms))))
+            return out
+        except Exception:
+            return []
+
+    # --- silueta del raton (diseno de Javier) -------------------------------
+    # Vectorizada a partir de su dibujo: linea central de cada trazo, simplificada
+    # y llevada a un viewBox de 24x24. Se dibuja con curvas suaves, a cualquier
+    # tamano y en cualquier color. No es el logo de Razer.
+    _MOUSE_LINES = [
+        [(6.97, 9.0), (6.93, 10.29), (6.77, 11.41), (6.37, 13.13), (5.57, 15.96), (5.37, 17.14), (5.28, 17.9), (5.28, 18.68), (5.5, 19.66), (5.81, 20.32), (6.35, 21.08), (7.04, 21.73), (7.87, 22.26), (8.76, 22.67), (9.76, 22.98), (10.87, 23.18), (12.41, 23.22), (13.24, 23.16), (14.71, 22.84), (15.64, 22.49), (16.51, 22.02), (17.23, 21.48), (17.83, 20.84), (18.19, 20.3), (18.54, 19.48), (18.7, 18.74), (18.7, 18.05), (18.61, 17.12), (18.23, 15.2), (17.56, 12.79), (17.2, 11.25), (17.05, 10.09), (17.0, 8.98)],
+        [(12.01, 6.88), (12.23, 6.82), (12.46, 6.66), (12.64, 6.37), (12.72, 5.97), (12.7, 3.32), (12.55, 2.94), (12.32, 2.72), (12.01, 2.63)],
+        [(11.99, 8.42), (11.99, 6.91)],
+        [(7.0, 8.98), (7.53, 9.02), (8.47, 9.2), (9.6, 9.23), (10.25, 9.07), (11.3, 8.58), (11.99, 8.44)],
+        [(11.97, 0.82), (11.59, 0.8), (11.43, 0.84), (10.14, 1.45), (8.85, 1.85), (8.04, 1.98), (6.44, 2.03), (6.26, 2.16), (6.06, 2.45), (5.95, 2.65), (5.88, 2.96), (5.9, 3.43), (6.55, 5.75), (6.82, 6.95), (6.97, 8.96)],
+        [(12.01, 8.44), (12.84, 8.58), (13.86, 9.07), (14.42, 9.2), (15.44, 9.2), (17.0, 8.98)],
+        [(11.99, 6.88), (11.68, 6.77), (11.45, 6.55), (11.3, 6.08), (11.3, 3.56), (11.34, 3.23), (11.5, 2.92), (11.68, 2.74), (11.97, 2.63)],
+        [(11.99, 0.84), (11.99, 2.61)],
+        [(12.01, 0.82), (12.43, 0.8), (12.59, 0.84), (13.93, 1.47), (14.98, 1.8), (15.89, 1.96), (17.56, 2.0), (17.69, 2.09), (17.92, 2.4), (18.1, 2.78), (18.12, 3.3), (17.98, 3.92), (17.25, 6.46), (17.07, 7.71), (17.0, 8.98)],
+    ]
+
+    def _catmull(pts, per_unit):
+        """Interpola los puntos con una spline Catmull-Rom (curva suave que pasa
+        por todos ellos). per_unit = muestras por unidad del viewBox."""
+        P_ = [pts[0]] + list(pts) + [pts[-1]]
+        out = []
+        for i in range(1, len(pts)):
+            p0, p1, p2, p3 = P_[i - 1], P_[i], P_[i + 1], P_[i + 2]
+            seg = max(1, int(math.hypot(p2[0] - p1[0], p2[1] - p1[1]) * per_unit))
+            for n in range(seg):
+                t = n / float(seg); t2 = t * t; t3 = t2 * t
+                out.append(tuple(0.5 * (2 * p1[j] + (p2[j] - p0[j]) * t
+                                        + (2 * p0[j] - 5 * p1[j] + 4 * p2[j] - p3[j]) * t2
+                                        + (3 * p1[j] - p0[j] - 3 * p2[j] + p3[j]) * t3) for j in (0, 1)))
+        out.append(tuple(pts[-1]))
+        return out
+
+    _mouse_cache = {}
+    MOUSE_STROKE = 0.06           # grosor del trazo: fraccion del alto (min. 1,8 px)
+    MOUSE_FILL = 0.94             # la silueta ocupa el 94 % del lienzo (margen para el trazo)
+
+    def mouse_png(size, color, stroke=None):
+        """PNG (bytes) de la silueta, `size` x `size` px, con antialias: se dibuja
+        4-6 veces mas grande con pincel redondo y se reduce con LANCZOS. Pillow ya
+        viene incluido con la bandeja del sistema. Devuelve None si no hay Pillow."""
+        try:
+            from PIL import Image, ImageDraw
+        except Exception:
+            return None
+        import io
+        ss = 6 if size <= 64 else 4
+        big = size * ss
+        k = big / 24.0 * MOUSE_FILL
+        off = big / 2.0 - 12 * k
+        r = max(1.8, (stroke if stroke else size * MOUSE_STROKE)) * ss / 2.0
+        mask = Image.new("L", (big, big), 0)
+        d = ImageDraw.Draw(mask)
+        for pl in _MOUSE_LINES:
+            for (x, y) in _catmull(pl, per_unit=max(8, ss * 3)):
+                d.ellipse((x * k + off - r, y * k + off - r, x * k + off + r, y * k + off + r), fill=255)
+        mask = mask.resize((size, size), Image.LANCZOS)
+        rgb = tuple(int(color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        img = Image.new("RGBA", (size, size), rgb + (0,))
+        img.putalpha(mask)
+        buf = io.BytesIO(); img.save(buf, "PNG")
+        return buf.getvalue()
+
+    def mouse_photo(size, color):
+        key = (size, color)
+        ph = _mouse_cache.get(key)
+        if ph is None:
+            png = mouse_png(size, color)
+            if png is None:
+                return None
+            ph = tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
+            _mouse_cache[key] = ph
+        return ph
+
+    def draw_mouse(cv, cx, cy, size, color, tag="mouse"):
+        """Dibuja la silueta centrada en (cx, cy) con alto `size` (px reales)."""
+        cv.delete(tag)
+        ph = mouse_photo(max(8, int(round(size))), color)
+        if ph is not None:
+            cv.create_image(cx, cy, image=ph, tags=tag)
+            return
+        k = size / 24.0                     # sin Pillow: lineas de Canvas (mas toscas)
+        w = max(1.8, MOUSE_STROKE * size)
+        ox, oy = cx - 12 * k, cy - 12 * k
+        for pl in _MOUSE_LINES:
+            flat = []
+            for (x, y) in pl:
+                flat += [ox + x * k, oy + y * k]
+            cv.create_line(*flat, fill=color, width=w, capstyle="round", joinstyle="round",
+                           smooth=True, splinesteps=12, tags=tag)
+
+    def icon_label(parent, key, size=20, color=FG, bg=CARD):
+        f = icon_font(size)
+        if not f:
+            return None
+        return tk.Label(parent, text=IC[key], font=f, fg=color, bg=bg)
+
+    class Toggle:
+        """Interruptor tipo Windows 11 ligado a una BooleanVar existente.
+        Etiqueta Activado/Desactivado a la izquierda (se retraduce)."""
+        def __init__(self, parent, var, bg=CARD, enabled=True):
+            self.var, self.bg, self.enabled = var, bg, enabled
+            self.frame = tk.Frame(parent, bg=bg)
+            self.lbl = tk.Label(self.frame, bg=bg, fg=FG, font=FONT_ROW)
+            self.lbl.pack(side="left", padx=(0, px(12)))
+            self.cv = tk.Canvas(self.frame, width=px(40) + 2 * GP, height=px(20) + 2 * GP, bg=bg,
+                                highlightthickness=0, cursor="hand2")
+            self.cv.pack(side="left")
+            for w in (self.cv, self.lbl):
+                w.bind("<Button-1>", self._click)
+            var.trace_add("write", lambda *_: self.draw())
+            reg(self.draw)
+
+        def _click(self, _e=None):
+            if self.enabled:
+                self.var.set(not self.var.get())
+
+        def set_enabled(self, on):
+            self.enabled = bool(on); self.draw()
+
+        def draw(self):
+            on = bool(self.var.get())
+            cv, W, H = self.cv, px(40), px(20)
+            cv.delete("all")
+            cv.configure(cursor=("hand2" if self.enabled else "arrow"))
+            r = px(6)                                # radio de la bolita
+            o = GP                                   # margen del halo
+            if on and self.enabled:
+                paint(cv, "pill", o, o, o + W, o + H, fill=ACCENT, glow=True)
+                cx, knob = W - px(10), ON_ACCENT
+            else:
+                col = T["SWITCH_OFF"] if self.enabled else T["DISABLED"]
+                paint(cv, "pill", o, o, o + W, o + H, outline=col, width=max(1, px(SHAPE.get("border", 1))))
+                cx = (W - px(10)) if on else px(10)
+                knob = T["KNOB_OFF"] if self.enabled else T["DISABLED"]
+            paint(cv, "dot", o + cx - r, o + H / 2 - r, o + cx + r, o + H / 2 + r, fill=knob)
+            self.lbl.configure(text=tr("on") if on else tr("off"),
+                               fg=(FG if self.enabled else FG3))
+
+    class Slider:
+        """Deslizador propio: pista fina, parte recorrida y tirador en acento.
+        on_release se llama al soltar (ahi se aplica al raton)."""
+        def __init__(self, parent, var, lo=0, hi=100, width=220, bg=CARD, on_release=None):
+            self.var, self.lo, self.hi, self.on_release, self.bg = var, lo, hi, on_release, bg
+            self.W, self.H = px(width), px(24)
+            self.cv = tk.Canvas(parent, width=self.W, height=self.H, bg=bg,
+                                highlightthickness=0, cursor="hand2")
+            self.cv.bind("<Button-1>", self._drag)
+            self.cv.bind("<B1-Motion>", self._drag)
+            self.cv.bind("<ButtonRelease-1>", self._release)
+            var.trace_add("write", lambda *_: self.draw())
+            self.draw()
+
+        def _x(self, v):
+            pad = px(9)
+            return pad + (self.W - 2 * pad) * (v - self.lo) / float(self.hi - self.lo)
+
+        def _drag(self, e):
+            pad = px(9)
+            frac = (e.x - pad) / float(max(1, self.W - 2 * pad))
+            self.var.set(int(round(self.lo + max(0.0, min(1.0, frac)) * (self.hi - self.lo))))
+
+        def _release(self, e):
+            self._drag(e)
+            if self.on_release:
+                self.on_release()
+
+        def draw(self):
+            cv = self.cv; cv.delete("all")
+            try: v = int(self.var.get())
+            except Exception: v = self.lo
+            y, x = self.H / 2, self._x(v)
+            t2 = px(2)                                   # media pista (4 px)
+            paint(cv, "pill", px(7), y - t2, self.W - px(7), y + t2, fill=T["SLIDER_TRACK"])
+            if x - px(7) >= 2 * t2:
+                paint(cv, "pill", px(7), y - t2, x, y + t2, fill=ACCENT)
+            r1, r2 = px(9), px(5)
+            paint(cv, "dot", x - r1, y - r1, x + r1, y + r1, fill=CTRL, outline=CTRL_BORDER, width=1)
+            paint(cv, "dot", x - r2, y - r2, x + r2, y + r2, fill=ACCENT, glow=True)
+
+    def text_box(parent, var, width_px, justify="left", bg=CARD, placeholder_key=None):
+        """Caja de texto de Windows 11: fondo CTRL, linea inferior que se pone
+        verde (2 px) con el foco. Devuelve (contenedor, entry)."""
+        box = tk.Frame(parent, bg=CTRL, highlightthickness=1, highlightbackground=CTRL_BORDER,
+                       width=px(width_px), height=px(32))
+        box.pack_propagate(False)
+        e = tk.Entry(box, textvariable=var, bg=CTRL, fg=FG, insertbackground=FG, relief="flat",
+                     font=FONT_ROW, justify=justify, highlightthickness=0, bd=0)
+        e.pack(fill="both", expand=True, padx=px(10))
+        line = tk.Frame(box, bg=INPUT_LINE, height=1)
+        line.place(relx=0, rely=1.0, relwidth=1.0, anchor="sw")
+        ph = None
+        if placeholder_key:
+            ph = tk.Label(box, bg=CTRL, fg=FG3, font=FONT_ROW, cursor="xterm")
+            reg(lambda: ph.configure(text=tr(placeholder_key)))
+            def _ph(*_):
+                if var.get() or root.focus_get() is e:
+                    ph.place_forget()
+                else:
+                    ph.place(relx=(1.0 if justify == "right" else 0.0), x=(-px(10) if justify == "right" else px(10)),
+                             rely=0.5, anchor=("e" if justify == "right" else "w"))
+            var.trace_add("write", _ph)
+            ph.bind("<Button-1>", lambda _e: e.focus_set())
+            box.after_idle(_ph)
+        def fin(_e=None):
+            e.configure(bg=INPUT_FOCUS); box.configure(bg=INPUT_FOCUS)
+            line.configure(bg=ACCENT, height=px(2))
+            if ph: ph.place_forget()
+        def fout(_e=None):
+            e.configure(bg=CTRL); box.configure(bg=CTRL)
+            line.configure(bg=INPUT_LINE, height=1)
+            if ph and not var.get():
+                ph.configure(bg=CTRL)
+                ph.place(relx=(1.0 if justify == "right" else 0.0), x=(-px(10) if justify == "right" else px(10)),
+                         rely=0.5, anchor=("e" if justify == "right" else "w"))
+        e.bind("<FocusIn>", fin, add="+"); e.bind("<FocusOut>", fout, add="+")
+        return box, e
+
+    def link(parent, key, command, bg=BG, color=T["LINK"]):
+        l = tk.Label(parent, bg=bg, fg=color, font=FONT_ROW, cursor="hand2")
+        reg_text(l, key)
+        l.bind("<Button-1>", lambda _e: command())
+        l.bind("<Enter>", lambda _e: l.configure(font=FONT_ROW + ("underline",)))
+        l.bind("<Leave>", lambda _e: l.configure(font=FONT_ROW))
+        return l
+
+    def autowrap(lbl, parent, margin=0, lo=200, hi=900):
+        """Hace que el salto de linea de `lbl` siga al ancho de `parent`."""
+        def f(e):
+            w = max(px(lo), min(px(hi), e.width - px(margin)))
+            if abs(w - int(float(lbl.cget("wraplength")))) > px(6):
+                lbl.configure(wraplength=w)
+        parent.bind("<Configure>", f, add="+")
+
+    def page_title(parent, key):
+        reg_text(tk.Label(parent, bg=BG, fg=FG, font=FONT_TITLE, anchor="w"), key).pack(
+            fill="x", pady=(0, px(4)))
+
+    def group_hdr(parent, key, first=False, note_key=None):
+        f = tk.Frame(parent, bg=BG)
+        f.pack(fill="x", pady=(px(6) if first else px(16), px(6)))
+        reg_text(tk.Label(f, bg=BG, fg=FG, font=FONT_GROUP), key).pack(side="left")
+        note = None
+        if note_key:
+            note = tk.Label(f, bg=BG, fg=FG2, font=FONT_DESC)
+            reg_text(note, note_key).pack(side="left", padx=(px(10), 0))
+        return f, note
+
+    def stack(parent):
+        """Contenedor de filas de un mismo grupo (separadas 2 px)."""
+        f = tk.Frame(parent, bg=BG); f.pack(fill="x")
+        return f
+
+    class Card:
+        """Tarjeta-fila: [icono] titulo/descripcion ............ [control]."""
+        def __init__(self, parent, icon=None, title=None, desc=None, min_h=52, indent=False,
+                     wrap=330):
+            self.frame = tk.Frame(parent, bg=CARD, highlightthickness=1,
+                                  highlightbackground=CARD_BORDER, highlightcolor=CARD_BORDER)
+            self.frame.pack(fill="x", pady=(0, px(2)))
+            inner = tk.Frame(self.frame, bg=CARD)
+            inner.pack(fill="x", padx=px(16), pady=px(6))
+            inner.grid_columnconfigure(1, weight=1)
+            inner.grid_rowconfigure(0, minsize=px(min_h - 18))
+            self.inner = inner
+            self.icon = None
+            if icon:
+                self.icon = icon_label(inner, icon, 20)
+                if self.icon:
+                    self.icon.grid(row=0, column=0, sticky="w", padx=(0, px(16)))
+            elif indent and F_ICON:
+                tk.Frame(inner, bg=CARD, width=px(36)).grid(row=0, column=0)
+            tx = tk.Frame(inner, bg=CARD); tx.grid(row=0, column=1, sticky="w")
+            self.title = tk.Label(tx, bg=CARD, fg=FG, font=FONT_ROW, anchor="w", justify="left")
+            self.title.pack(anchor="w")
+            self.desc = tk.Label(tx, bg=CARD, fg=FG2, font=FONT_DESC, anchor="w", justify="left",
+                                 wraplength=px(wrap))
+            if title: reg_text(self.title, title)
+            if desc:
+                reg_text(self.desc, desc); self.desc.pack(anchor="w")
+            self.ctrl = tk.Frame(inner, bg=CARD)
+            self.ctrl.grid(row=0, column=2, sticky="e", padx=(px(12), 0))
+            inner.bind("<Configure>", self._refit)
+
+        def _refit(self, _e=None):
+            """Ajusta el salto de linea de la descripcion al ancho real de la fila
+            (la ventana se puede redimensionar)."""
+            try:
+                w = self.inner.winfo_width()
+                if w <= 1:
+                    return
+                col0 = self.inner.grid_bbox(0, 0)[2]
+                want = max(px(110), min(px(640), w - col0 - self.ctrl.winfo_reqwidth() - px(24)))
+                if abs(want - int(float(self.desc.cget("wraplength")))) > px(6):
+                    self.desc.configure(wraplength=want)
+            except tk.TclError:
+                pass
+
+        def set_desc(self, text):
+            if text:
+                self.desc.configure(text=text)
+                if not self.desc.winfo_ismapped(): self.desc.pack(anchor="w")
+            else:
+                self.desc.pack_forget()
+
+    class ScrollPage:
+        """Pagina con desplazamiento vertical si el contenido no cabe. La barra
+        de scroll solo aparece cuando hace falta."""
+        def __init__(self, parent):
+            self.outer = tk.Frame(parent, bg=BG)
+            self.cv = tk.Canvas(self.outer, bg=BG, highlightthickness=0, bd=0)
+            self.sb = ttk.Scrollbar(self.outer, orient="vertical", command=self.cv.yview)
+            self.cv.configure(yscrollcommand=self.sb.set)
+            self.cv.pack(side="left", fill="both", expand=True)
+            self.body = tk.Frame(self.cv, bg=BG)
+            self._win = self.cv.create_window(0, 0, window=self.body, anchor="nw")
+            self.body.bind("<Configure>", lambda _e: self._update())
+            self.cv.bind("<Configure>", lambda e: (self.cv.itemconfigure(self._win, width=e.width),
+                                                   self._update()))
+            self.outer.bind("<Enter>", lambda _e: self._wheel(True))
+            self.outer.bind("<Leave>", lambda _e: self._wheel(False))
+
+        def _update(self):
+            self.cv.configure(scrollregion=self.cv.bbox("all"))
+            need = self.body.winfo_reqheight() > self.cv.winfo_height() + 2
+            if need and not self.sb.winfo_ismapped():
+                self.sb.pack(side="right", fill="y", before=self.cv)
+            elif not need and self.sb.winfo_ismapped():
+                self.sb.pack_forget(); self.cv.yview_moveto(0)
+
+        def _wheel(self, on):
+            if on:
+                root.bind_all("<MouseWheel>", self._on_wheel)
+                root.bind_all("<Button-4>", lambda _e: self.cv.yview_scroll(-1, "units"))
+                root.bind_all("<Button-5>", lambda _e: self.cv.yview_scroll(1, "units"))
+            else:
+                root.unbind_all("<MouseWheel>"); root.unbind_all("<Button-4>"); root.unbind_all("<Button-5>")
+
+        def _on_wheel(self, e):
+            if self.sb.winfo_ismapped():
+                self.cv.yview_scroll(int(-e.delta / 120), "units")
+
+    def dark_titlebar(win):
+        """Barra de titulo clara u oscura segun el tema (Windows 10 1809+ / 11)."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            win.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+            val = ctypes.c_int(0 if THEME_MODE == "light" else 1)      # modo claro u oscuro
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(val), 4) != 0:
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(val), 4)
+            r_, g_, b_ = (int(BG[i:i + 2], 16) for i in (1, 3, 5))
+            col = ctypes.c_int((b_ << 16) | (g_ << 8) | r_)              # COLORREF = 0x00BBGGRR
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(col), 4)
+        except Exception:
+            pass
+
+    def round_corners(win):
+        """Esquinas redondeadas de Windows 11 para ventanas sin bordes."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            win.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+            pref = ctypes.c_int(2)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(pref), 4)
+        except Exception:
+            pass
+
+    # =====================================================================
+    # 4) ESTRUCTURA: barra lateral fija + area de contenido con paginas
+    # =====================================================================
+    shell = tk.Frame(root, bg=BG); shell.pack(fill="both", expand=True)
+    sidebar = tk.Frame(shell, bg=BG, width=px(272))
+    sidebar.pack(side="left", fill="y"); sidebar.pack_propagate(False)
+    side_in = tk.Frame(sidebar, bg=BG)
+    side_in.pack(fill="both", expand=True, padx=(px(16), px(12)), pady=(px(8), px(16)))
+    content = tk.Frame(shell, bg=BG)
+    content.pack(side="left", fill="both", expand=True)
+    pages_box = tk.Frame(content, bg=BG)
+    pages_box.pack(fill="both", expand=True, padx=(px(20), px(32)), pady=(px(4), px(20)))
+    pages_box.grid_rowconfigure(0, weight=1); pages_box.grid_columnconfigure(0, weight=1)
+
+    PAGES = {}
+
+    def new_page(name, scroll=True):
+        if scroll:
+            sp = ScrollPage(pages_box)
+            sp.outer.grid(row=0, column=0, sticky="nsew")
+            PAGES[name] = sp.outer
+            return sp.body
+        f = tk.Frame(pages_box, bg=BG); f.grid(row=0, column=0, sticky="nsew")
+        PAGES[name] = f
+        return f
+
+    # --- bloque del dispositivo (como el avatar de Configuracion) ---------------
+    dev = tk.Frame(side_in, bg=BG); dev.pack(fill="x", pady=(px(8), px(18)))
+    dev_cv = tk.Canvas(dev, width=px(60), height=px(60), bg=BG, highlightthickness=0)
+    dev_cv.pack(side="left")
+    paint(dev_cv, "dot", 0, 0, px(60), px(60), fill=CTRL)
+    dev_txt = tk.Frame(dev, bg=BG); dev_txt.pack(side="left", padx=(px(12), 0), fill="x")
+    dev_l1 = tk.Frame(dev_txt, bg=BG); dev_l1.pack(anchor="w")
+    spin_cv = tk.Canvas(dev_l1, width=px(14), height=px(14), bg=BG, highlightthickness=0)
+    dev_name = tk.Label(dev_l1, bg=BG, fg=FG, font=FONT_GROUP, anchor="w", justify="left",
+                        wraplength=px(150))
+    dev_name.pack(side="left")
+    dev_l2 = tk.Frame(dev_txt, bg=BG, cursor="hand2"); dev_l2.pack(anchor="w", pady=(px(2), 0))
+    dev_batt_ic = tk.Label(dev_l2, bg=BG, fg=FG2, font=(icon_font(12) or FONT_DESC), cursor="hand2")
+    dev_sub = tk.Label(dev_l2, bg=BG, fg=FG2, font=FONT_DESC, anchor="w", cursor="hand2",
+                       wraplength=px(170), justify="left")
+    dev_sub.pack(side="left")
+    # modo Mediavida: el logo del foro en lugar del raton (redondeado)
+    mv_logo_big = image_frames(MV_LOGO, px(60), radius=px(14)) if MV_ACTIVE else []
+
+    spin_angle = [0]; spin_job = [None]
+
+    def _spin():
+        a = spin_angle[0]
+        spin_cv.delete("all")
+        paint_arc(spin_cv, px(1), px(1), px(13), px(13), a, 270, ACCENT, max(1, px(1.6)))
+        spin_angle[0] = (a - 18) % 360
+        spin_job[0] = root.after(60, _spin)
+
+    def _spin_on(on):
+        if on and spin_job[0] is None:
+            spin_cv.pack(side="left", padx=(0, px(6)), before=dev_name)
+            _spin()
+        elif not on and spin_job[0] is not None:
+            root.after_cancel(spin_job[0]); spin_job[0] = None
+            spin_cv.pack_forget()
+
+    # estado de conexion y bateria (los usa la logica copiada)
     state_conn = [None]
-    def render_status():
-        status_var.set(tr("status_conn", name=state_conn[0]) if state_conn[0] else tr("status_disc"))
-    reg(render_status)
-
-    # selector de idioma, arriba a la izquierda
-    lang_var = tk.StringVar(value=lang[0].upper())
-    lang_combo = ttk.Combobox(root, textvariable=lang_var, values=["ES", "EN"],
-                              state="readonly", width=4)
-    lang_combo.place(relx=0.0, x=10, y=10, anchor="nw")
-
-    def on_lang(_e=None):
-        lang[0] = "es" if lang_var.get() == "ES" else "en"
-        presets["lang"] = lang[0]; save_presets(presets)
-        set_core_lang(lang[0])                   # mensajes del nucleo (log/errores)
-        retranslate()
-    lang_combo.bind("<<ComboboxSelected>>", on_lang)
-
-    # boton "?" (Acerca de), arriba a la derecha
-    def show_about():
-        messagebox.showinfo(tr("about_title"),
-                            tr("about_text") + "\n\n" + tr("about_ver", v=APP_VERSION))
-    ttk.Button(root, text="?", width=3, style="About.TButton",
-               command=show_about).place(relx=1.0, x=-10, y=10, anchor="ne")
-
-    # indicador de BATERIA siempre visible (fuera de las pestanas). Se pulsa
-    # sobre el propio texto o sobre el icono para actualizar. Color por nivel.
     batt_supported = [None]                  # None=desconocido, True/False tras conectar
     state_batt = [None]                      # None o (pct, cargando)
-    bbar = ttk.Frame(root); bbar.pack(pady=(8, 0))
-    batt_var = tk.StringVar()
-    batt_lbl = tk.Label(bbar, textvariable=batt_var, bg=BG, fg=MUTED,
-                        font=("Segoe UI", 12, "bold"), cursor="hand2")
-    batt_lbl.pack(side="left")
-    batt_refresh = tk.Label(bbar, text="\u27f3", bg=BG, fg=MUTED,
-                            font=("Segoe UI", 12), cursor="hand2")
-    batt_refresh.pack(side="left", padx=(6, 0))
+
+    def render_device():
+        """Pinta el bloque del dispositivo de la barra lateral."""
+        connected = bool(state_conn[0])
+        if mv_logo_big:
+            if not dev_cv.find_withtag("mvlogo"):
+                dev_cv.delete("all")
+                dev_cv.create_image(0, 0, image=mv_logo_big[0][0], anchor="nw", tags="mvlogo")
+        else:
+            draw_mouse(dev_cv, px(30), px(30), px(40), ACCENT if connected else FG3)
+        if not connected:
+            _spin_on(True)
+            dev_name.configure(text=tr("searching"))
+            dev_sub.configure(text=tr("searching_desc")); dev_batt_ic.pack_forget()
+            return
+        _spin_on(False)
+        nm = str(state_conn[0])
+        nm = nm[6:] if nm.startswith("Razer ") else nm
+        dev_name.configure(text=nm)
+        if batt_supported[0] and state_batt[0] is not None:
+            pct, chg = state_batt[0]
+            dev_sub.configure(text=tr("conn_batt_chg" if chg else "conn_batt", pct=pct))
+            if F_ICON:
+                dev_batt_ic.configure(text=batt_glyph(pct, chg),
+                                      fg=(LOW_BATT if (pct < 20 and not chg) else FG2))
+                dev_batt_ic.pack(side="left", padx=(0, px(6)), before=dev_sub)
+        else:
+            dev_sub.configure(text=tr("conn_only")); dev_batt_ic.pack_forget()
+        update_tray_tip()
+
+    def tray_status():
+        """Perfil activo, DPI y bateria en una linea (tooltip y menu de la bandeja)."""
+        try:
+            if mouse.dev is None or not state_conn[0]:
+                return tr("searching")
+            parts = []
+            cur = current[0]
+            if cur is not None and profiles[cur]:
+                parts.append(tr("tip_profile", n=cur + 1, x=profiles[cur]))
+            if batt_supported[0] and state_batt[0] is not None:
+                pct, chg = state_batt[0]
+                parts.append(tr("tip_batt_chg" if chg else "tip_batt", pct=pct))
+            return " · ".join(parts)
+        except NameError:                     # aun montandose la ventana
+            return ""
+
+    def tray_tip():
+        """Texto al pasar el raton por el icono de la bandeja. Windows corta los
+        tooltips de la bandeja a 127 caracteres."""
+        st_ = tray_status()
+        return (f"{APP_NAME}\n{st_}" if st_ else APP_NAME)[:127]
+
+    def update_tray_tip():
+        """Refresca tooltip y menu si el icono de la bandeja esta visible."""
+        try:
+            icon = tray[0]
+        except NameError:
+            return
+        if icon is not None:
+            try:
+                icon.title = tray_tip()
+                icon.update_menu()
+            except Exception:
+                pass
+
+    def render_status():
+        render_device()
+
+    def render_batt():
+        render_device()
+    reg(render_device)
 
     def on_batt_click(_e=None):
         if mouse.dev is not None and batt_supported[0]:
             do_read_battery()
-    batt_lbl.bind("<Button-1>", on_batt_click)
-    batt_refresh.bind("<Button-1>", on_batt_click)
+    for _w in (dev_l2, dev_sub, dev_batt_ic):
+        _w.bind("<Button-1>", on_batt_click)
+
+    # --- navegacion ----------------------------------------------------------
+    nav_items = {}
+    current_page = [None]
+
+    def nav_item(parent, name, icon, key):
+        it = tk.Frame(parent, bg=BG, height=px(36), cursor="hand2")
+        it.pack(fill="x", pady=(0, px(4))); it.pack_propagate(False)
+        pill = tk.Canvas(it, width=px(3), height=px(16), bg=BG, highlightthickness=0)
+        pill.place(x=0, rely=0.5, anchor="w")
+        ic = tk.Label(it, text=(IC[icon] if F_ICON else ""), font=(icon_font(16) or FONT_ROW),
+                      fg=FG2, bg=BG)
+        ic.place(x=px(12), rely=0.5, anchor="w")
+        tx = tk.Label(it, bg=BG, fg=FG, font=FONT_ROW)
+        tx.place(x=px(12 + (30 if F_ICON else 0)), rely=0.5, anchor="w")
+        reg_text(tx, key)
+        parts = (it, pill, ic, tx)
+        def repaint(hover=False):
+            sel = current_page[0] == name
+            bgc = CTRL if (sel or hover) else BG
+            for w in parts: w.configure(bg=bgc)
+            pill.delete("all")
+            if sel:
+                paint(pill, "pill", 0, 0, px(3), px(16), fill=ACCENT)
+        for w in parts:
+            w.bind("<Enter>", lambda _e: repaint(True))
+            w.bind("<Leave>", lambda _e: repaint(False))
+            w.bind("<Button-1>", lambda _e: show_page(name))
+        nav_items[name] = repaint
+        return it
+
+    def set_language(code):
+        """Cambia el idioma al momento (sin reiniciar) y lo recuerda."""
+        if code == lang[0] or code not in ("es", "en"):
+            return
+        lang[0] = code
+        presets["lang"] = code; save_presets(presets)
+        retranslate()
+
+    class LangSwitch:
+        """Interruptor ES | EN (pildora con la mitad activa en acento)."""
+        W, H = 88, 28
+
+        def __init__(self, parent):
+            self.frame = tk.Frame(parent, bg=BG, height=px(40))
+            self.frame.pack(fill="x", pady=(0, px(4))); self.frame.pack_propagate(False)
+            ic = tk.Label(self.frame, text=(IC["lang"] if F_ICON else ""),
+                          font=(icon_font(16) or FONT_ROW), fg=FG2, bg=BG)
+            ic.place(x=px(12), rely=0.5, anchor="w")
+            tx = tk.Label(self.frame, bg=BG, fg=FG, font=FONT_ROW)
+            tx.place(x=px(12 + (30 if F_ICON else 0)), rely=0.5, anchor="w")
+            reg_text(tx, "lang_title")
+            self.cv = tk.Canvas(self.frame, width=px(self.W) + 2 * GP, height=px(self.H) + 2 * GP, bg=BG,
+                                highlightthickness=0, cursor="hand2")
+            self.cv.place(relx=1.0, x=-px(6) + GP, rely=0.5, anchor="e")
+            self.cv.bind("<Button-1>", self._click)
+            reg(self.draw)
+
+        def _click(self, e):
+            set_language("es" if e.x - GP < px(self.W) / 2.0 else "en")
+
+        def draw(self):
+            cv, W, H, o = self.cv, px(self.W), px(self.H), GP
+            cv.delete("all")
+            paint(cv, "pill", o, o, o + W, o + H, fill=CTRL, outline=CTRL_BORDER, width=1)
+            half = W / 2.0
+            sel = 0 if lang[0] == "es" else 1
+            x0 = px(3) if sel == 0 else half
+            x1 = half if sel == 0 else W - px(3)
+            paint(cv, "pill", o + x0, o + px(3), o + x1, o + H - px(3), fill=ACCENT, glow=True)
+            for k, code in enumerate(("ES", "EN")):
+                cv.create_text(o + half * (0.5 + k), o + H / 2.0, text=code, font=font(12, semibold=True),
+                               fill=(ON_ACCENT if k == sel else FG2))
+
+    nav_top = tk.Frame(side_in, bg=BG); nav_top.pack(fill="x")
+    nav_bottom = tk.Frame(side_in, bg=BG); nav_bottom.pack(side="bottom", fill="x")
+    lang_switch = LangSwitch(nav_bottom)         # encima de Registro / Acerca de
+    for _n, _ic, _k in (("profiles", "profiles", "nav_profiles"), ("lighting", "lighting", "nav_lighting"),
+                        ("buttons", "buttons", "nav_buttons"), ("settings", "settings", "nav_settings")):
+        nav_item(nav_top, _n, _ic, _k)
+    for _n, _ic, _k in (("log", "log", "nav_log"), ("about", "about", "nav_about")):
+        nav_item(nav_bottom, _n, _ic, _k)
+
+    def nav_link(parent, icon, key, command, image=None):
+        """Entrada de la barra lateral que abre algo (no es una pagina).
+        image: PhotoImage pequena en lugar del icono de la fuente."""
+        it = tk.Frame(parent, bg=BG, height=px(36), cursor="hand2")
+        it.pack(fill="x", pady=(0, px(4))); it.pack_propagate(False)
+        if image is not None:
+            ic = tk.Label(it, image=image, bg=BG)
+            ic._img = image
+        else:
+            ic = tk.Label(it, text=(IC[icon] if F_ICON else ""), font=(icon_font(16) or FONT_ROW),
+                          fg=T["LINK"], bg=BG)
+        ic.place(x=px(12), rely=0.5, anchor="w")
+        tx = tk.Label(it, bg=BG, fg=FG, font=FONT_ROW)
+        tx.place(x=px(12 + (30 if (F_ICON or image is not None) else 0)), rely=0.5, anchor="w")
+        reg_text(tx, key)
+        parts = (it, ic, tx)
+        for w in parts:
+            w.bind("<Enter>", lambda _e: [p_.configure(bg=CTRL) for p_ in parts])
+            w.bind("<Leave>", lambda _e: [p_.configure(bg=BG) for p_ in parts])
+            w.bind("<Button-1>", lambda _e: command())
+        return it
+    kofi_nav = nav_link(nav_bottom, "heart", "nav_kofi", lambda: open_kofi())
+    mv_logo_small = image_frames(MV_LOGO, px(18), shaped=False)
+    mv_nav = None
+    if MV_ACTIVE:                                      # solo en modo Mediavida, encima de Idioma
+        mv_nav = nav_link(nav_bottom, "open", "nav_mv_thread", lambda: open_url(MV_THREAD_URL),
+                          image=(mv_logo_small[0][0] if mv_logo_small else None))
+        mv_nav.pack_configure(before=lang_switch.frame)
+        mv_spy = nav_link(nav_top, "view", "nav_mv_spy", lambda: open_url(MV_SPY_URL))  # debajo de Ajustes
+
+    def show_page(name):
+        if name not in PAGES:
+            return
+        current_page[0] = name
+        PAGES[name].tkraise()
+        for _rp in nav_items.values(): _rp()
+        presets["last_page"] = name; save_presets(presets)
 
     # =====================================================================
-    # 5) UTILIDADES: log y envoltura de errores
+    # 5) REGISTRO (se crea el primero: log() escribe aunque no este a la vista)
     # =====================================================================
+    pg_log = new_page("log", scroll=False)
+    page_title(pg_log, "log_title")
+    log_desc_lbl = tk.Label(pg_log, bg=BG, fg=FG2, font=font(13), anchor="w", justify="left",
+                            wraplength=px(700))
+    reg_text(log_desc_lbl, "log_desc").pack(fill="x", pady=(0, px(12)))
+    autowrap(log_desc_lbl, pg_log, 8, lo=240, hi=1400)
+    log_wrap = tk.Frame(pg_log, bg=LOG_BG, highlightthickness=1, highlightbackground=LOG_BORDER)
+    log_wrap.pack(fill="both", expand=True)
+    log_sb = ttk.Scrollbar(log_wrap, orient="vertical")
+
+    def _log_scroll(lo, hi):
+        """La barra solo aparece cuando el registro no cabe."""
+        log_sb.set(lo, hi)
+        if float(lo) <= 0.0 and float(hi) >= 1.0:
+            log_sb.pack_forget()
+        elif not log_sb.winfo_ismapped():
+            log_sb.pack(side="right", fill="y", before=logbox)
+    logbox = tk.Text(log_wrap, state="disabled", bg=LOG_BG, fg=FG2, font=FONT_LOG, relief="flat",
+                     highlightthickness=0, bd=0, padx=px(16), pady=px(12), wrap="word",
+                     yscrollcommand=_log_scroll, insertbackground=FG, selectbackground=T["SELECT_BG"], selectforeground=FG)
+    log_sb.configure(command=logbox.yview)
+    logbox.pack(side="left", fill="both", expand=True)
+    log_actions = tk.Frame(pg_log, bg=BG); log_actions.pack(fill="x", pady=(px(12), 0))
+    log_note = tk.Label(pg_log, bg=BG, fg=FG2, font=FONT_DESC, anchor="w", justify="left",
+                        wraplength=px(560))
+    log_note.pack(fill="x", pady=(px(8), 0))
+    autowrap(log_note, pg_log, 0, lo=240, hi=900)
     state_fw = ["?"]                         # firmware leido (para reportes)
+
+    LOG_MAX_LINES = 1500                     # con el programa dias abierto, no crece sin fin
 
     def log(m):
         logbox.configure(state="normal"); logbox.insert("end", str(m) + "\n")
-        logbox.see("end"); logbox.configure(state="disabled"); root.update_idletasks()
+        try:
+            n = int(logbox.index("end-1c").split(".")[0])
+            if n > LOG_MAX_LINES:
+                logbox.delete("1.0", f"{n - LOG_MAX_LINES + 1}.0")
+        except Exception:
+            pass
+        logbox.see("end"); logbox.configure(state="disabled")
 
     def guard(fn):
         """Envuelve un handler para que cualquier excepcion vaya al log en vez
@@ -1626,26 +3232,56 @@ def run_gui():
             except Exception as e: log(f"[ERROR] {e}")
         return w
 
-    def render_batt():
-        """Pinta el indicador de bateria segun el estado y colorea por nivel."""
-        if not batt_supported[0]:            # None o False -> no disponible / --
-            batt_var.set(tr("batt_na") if batt_supported[0] is False else tr("batt0"))
-            batt_lbl.configure(fg=MUTED); batt_refresh.configure(fg=MUTED)
+    batt_doubt = {"val": None, "n": 0, "job": None}     # lectura dudosa pendiente de confirmar
+
+    def battery_plausible(pct, chg):
+        """Filtro de lecturas raras. El receptor inalambrico puede dar 0 % (o un
+        salto enorme) mientras el raton se despierta o al arrancar. Una lectura
+        asi solo se acepta si se repite en la siguiente lectura; mientras, se
+        sigue mostrando el valor anterior (o nada)."""
+        prev = state_batt[0]
+        odd = (pct <= 0 and not chg) or pct > 100
+        if prev is not None and not odd and chg == prev[1] and abs(pct - prev[0]) >= 25:
+            odd = True                                 # salto de 25 puntos de golpe
+        if not odd:
+            batt_doubt["val"] = None; batt_doubt["n"] = 0
+            return True
+        dv = batt_doubt["val"]
+        if dv is not None and dv[1] == chg and abs(dv[0] - pct) <= 3:   # se repite (mas o menos)
+            batt_doubt["n"] += 1; batt_doubt["val"] = (pct, chg)
+        else:
+            batt_doubt["val"] = (pct, chg); batt_doubt["n"] = 1
+        if batt_doubt["n"] >= 3 and pct <= 100:      # se repite: es real
+            batt_doubt["val"] = None; batt_doubt["n"] = 0
+            return True
+        batt_retry_soon()
+        return False
+
+    def batt_retry_soon(ms=2500):
+        """Vuelve a leer la bateria en un rato (una sola espera pendiente)."""
+        if batt_doubt["job"] is not None:
             return
-        if state_batt[0] is None:
-            batt_var.set(tr("batt0")); batt_lbl.configure(fg=MUTED)
-            batt_refresh.configure(fg=MUTED); return
-        pct, chg = state_batt[0]
-        batt_var.set(tr("batt", pct=pct, chg=(tr("batt_charging") if chg else "")))
-        col = GREEN if (chg or pct >= 50) else (YELL if pct >= 20 else RED)
-        batt_lbl.configure(fg=col); batt_refresh.configure(fg=FG)
-    reg(render_batt)
+        def _again():
+            batt_doubt["job"] = None
+            if mouse.dev is not None and not refresh_battery_async():
+                batt_retry_soon(500)                   # el hilo de E/S estaba ocupado
+        try:
+            batt_doubt["job"] = root.after(ms, _again)
+        except Exception:
+            batt_doubt["job"] = None
 
     @guard
     def do_read_battery():
-        pct, chg = mouse.get_battery()
+        try:
+            pct, chg = mouse.get_battery()
+        except MouseBusy as e:
+            log(f"[!] {e}"); batt_retry_soon(3000); return
+        if not battery_plausible(pct, chg):
+            log(trl("log_batt_doubt", pct=pct))
+            return
         state_batt[0] = (pct, chg); render_batt()
-        log(tr("log_batt", pct=pct, chg=(tr("batt_charging") if chg else "")))
+        log(trl("log_batt", pct=pct, chg=(trl("batt_charging") if chg else "")))
+        evaluate_battery(pct, chg)
 
     # =====================================================================
     # 6) CONEXION AUTOMATICA
@@ -1682,7 +3318,7 @@ def run_gui():
         last_conn_try[0] = time.time()
         try:
             if manual:
-                log(tr("log_connecting", name=m["name"]))
+                log(trl("log_connecting", name=m["name"]))
             mouse.connect(m, log=(log if manual else (lambda s: None)))
         except Exception as e:
             if manual or str(e) != last_conn_err[0]:
@@ -1690,6 +3326,16 @@ def run_gui():
             last_conn_err[0] = str(e)
             state_conn[0] = None; render_status()
             return False
+        try:
+            fw = mouse.get_firmware()
+        except Exception:
+            fw = None
+        _after_connect(m, fw)
+        refresh_battery()
+        return True
+
+    def _after_connect(m, fw):
+        """Lo que se hace en la interfaz al conectar (en el hilo de Tk)."""
         last_conn_err[0] = None
         real = _model_for_pid(mouse.pid) or m          # modelo real (DPI max, LED...)
         mouse.model = real
@@ -1698,66 +3344,90 @@ def run_gui():
         state_conn[0] = real["name"]; render_status()
         presets["last_model"] = model_var.get(); save_presets(presets)
         batt_supported[0] = real["wireless"]
-        log(tr("log_connected_ok", name=real["name"]))
-        try:
-            fw = mouse.get_firmware(); state_fw[0] = f"v{fw[0]}.{fw[1]}"
-        except Exception:
-            pass
-        refresh_battery()
+        log(trl("log_connected_ok", name=real["name"]))
+        if fw:
+            state_fw[0] = f"v{fw[0]}.{fw[1]}"
         on_connected()                                 # toma el control de los perfiles
-        return True
+
+    def connect_async():
+        """Intento de conexion automatico SIN congelar la ventana: la busqueda y
+        el sondeo del raton van en el hilo de E/S."""
+        m = current_model()
+        last_conn_try[0] = time.time()
+
+        def job():
+            mouse.connect(m)
+            try:
+                fw = mouse.get_firmware()
+            except Exception:
+                fw = None
+            return fw
+
+        def done(st, res):
+            if st != "ok":
+                e = res
+                if str(e) != last_conn_err[0]:
+                    log(f"[!] {e}")
+                last_conn_err[0] = str(e)
+                if mouse.dev is None:
+                    state_conn[0] = None; render_status()
+                return
+            if mouse.dev is None or wizard_active[0]:
+                return
+            _after_connect(m, res)
+            last_batt[0] = 0.0                           # leer la bateria ya (en E/S)
+        io_submit(job, done)
 
     def on_disconnected():
         stop_listener()
+        sniper_state["active"] = False
         try: mouse.close()
         except Exception: pass
         state_conn[0] = None; render_status()
         state_batt[0] = None; render_batt()
+        batt_doubt["val"] = None; batt_doubt["n"] = 0
         render_profiles()
-        log(tr("log_disconnected"))
+        log(trl("log_disconnected"))
 
     def refresh_battery():
-        """Lee la bateria sin llenar el log (se llama sola cada minuto)."""
+        """Lee la bateria sin llenar el log."""
         if mouse.dev is None or not batt_supported[0]:
             render_batt(); return
         try:
-            pct, chg = mouse.get_battery()
-            state_batt[0] = (pct, chg)
-        except Exception:
-            pass
+            res = ("ok", mouse.get_battery())
+        except Exception as e:
+            res = ("err", e)
+        _batt_result(*res)
+
+    def _batt_result(st, res):
+        """Resultado de una lectura de bateria (venga del hilo que venga)."""
+        if mouse.dev is None or not batt_supported[0]:
+            render_batt(); return
+        if st != "ok":
+            # raton despertandose / receptor ocupado: se reintenta pronto en vez
+            # de esperar al minuto (antes se quedaba sin bateria o con 0 %)
+            render_batt(); batt_retry_soon(3000); return
+        pct, chg = res
+        if not battery_plausible(pct, chg):
+            render_batt(); return
+        state_batt[0] = (pct, chg)
         render_batt()
+        evaluate_battery(pct, chg)
+
+    def refresh_battery_async():
+        if mouse.dev is None or not batt_supported[0]:
+            return False
+        return io_submit(mouse.get_battery, _batt_result)
 
     # =====================================================================
-    # 7) PESTANAS + PERFILES
-    #
-    #    DOS MODOS:
-    #    - CONTROL (por defecto, como Synapse): el programa pone el raton en
-    #      "modo driver". El raton deja de cambiar de perfil solo y avisa al
-    #      programa de cada pulsacion del boton de perfil / DPI; el programa
-    #      aplica el perfil siguiente. Exacto e instantaneo. Tus 5 perfiles se
-    #      guardan en el programa y se aplican al abrirlo. Los perfiles de
-    #      fabrica del raton NO se tocan (el DPI se aplica sin guardar en su
-    #      memoria) y al cerrar el programa el raton vuelve a su modo normal.
-    #    - COMPATIBILIDAD (si Windows no deja escuchar el boton, o si lo
-    #      desactivas): el perfil se deduce por el DPI que usa el raton. Nunca
-    #      sobrescribe valores por su cuenta.
+    # 7) PERFILES (estado, modos control/compatibilidad y pagina)
     # =====================================================================
-    nb = ttk.Notebook(root); nb.pack(fill="both", expand=True, padx=8, pady=6)
-    tab_perf = ttk.Frame(nb); nb.add(tab_perf, text="")
-    tab_led  = ttk.Frame(nb); nb.add(tab_led, text="")
-    tab_btn  = ttk.Frame(nb); nb.add(tab_btn, text="")
-    tab_opts = ttk.Frame(nb); nb.add(tab_opts, text="")
-    reg(lambda: nb.tab(tab_perf, text=tr("tab_main")))
-    reg(lambda: nb.tab(tab_led, text=tr("tab_led")))
-    reg(lambda: nb.tab(tab_btn, text=tr("tab_btn")))
-    reg(lambda: nb.tab(tab_opts, text=tr("tab_opts")))
-
     DEFAULT_PROFILES = [400, 800, 1600, 3200, 6400]
     # Colores de los perfiles INTERNOS del raton (LED de debajo), en el orden en
     # que los recorre su boton de perfil (Viper Ultimate): rojo, verde, azul,
     # turquesa, amarillo. El perfil N del programa se graba en el color N.
-    PROFILE_COLORS = ["#ff3b30", "#34c759", "#2f7bff", "#2ad4c8", "#ffd60a"]
-    PROFILE_TEXT   = ["#ffffff", "#0b1f0f", "#ffffff", "#062a27", "#2a2200"]  # texto legible encima
+    PROFILE_COLORS = ["#FF2E4D", "#2BFF6E", "#2F86FF", "#00F0E1", "#FFE138"]   # neon, siempre planos
+    PROFILE_TEXT   = ["#FFFFFF", "#14140F", "#FFFFFF", "#14140F", "#14140F"]  # por si hay texto encima
     COLOR_KEYS     = ["col_red", "col_green", "col_blue", "col_turq", "col_yellow"]
     wizard_active = [False]      # el asistente de grabado esta en marcha
 
@@ -1805,7 +3475,8 @@ def run_gui():
         stop_listener()
         lst = ButtonListener(mouse.pid,
                              lambda code: uiq.put(lambda c=code: on_button(c)),
-                             lambda raw: uiq.put(lambda r=raw: on_other_report(r)))
+                             lambda raw: uiq.put(lambda r=raw: on_other_report(r)),
+                             lambda code: uiq.put(lambda c=code: on_button_release(c)))
         n = lst.start()
         listener[0] = lst
         return n
@@ -1833,26 +3504,27 @@ def run_gui():
         apply_profile(current[0], announce=False)
         if not verified[0]:
             verify_deadline[0] = time.time() + 25      # 25 s para pulsar el boton
-            log(tr("log_ctrl_verify"))
+            log(trl("log_ctrl_verify"))
         else:
-            log(tr("log_ctrl_on"))
+            log(trl("log_ctrl_on"))
         return True
 
     def release_control(announce=True):
         """Devuelve el raton a su modo normal (sus perfiles de fabrica)."""
         stop_listener()
         verify_deadline[0] = None
+        sniper_state["active"] = False               # el DPI se reaplica al retomar el control
         if ctrl_on[0] and mouse.dev is not None:
             try: mouse.set_device_mode(RazerMouse.MODE_NORMAL)
             except Exception: pass
             if announce:
-                log(tr("log_ctrl_restored"))
+                log(trl("log_ctrl_restored"))
         ctrl_on[0] = False
 
     def fall_back(reason_key):
         """No se pudo usar el modo control: pasa a compatibilidad."""
         release_control(announce=False)
-        log(tr(reason_key))
+        log(trl(reason_key))
         start_compat()
 
     def on_connected():
@@ -1860,7 +3532,7 @@ def run_gui():
             pass
         else:
             if ctrl_want[0]:
-                log(tr("log_ctrl_fail"))
+                log(trl("log_ctrl_fail"))
             start_compat()
         render_profiles()
 
@@ -1886,45 +3558,74 @@ def run_gui():
             current[0] = known[x]
             if learning[0] and not initial and prev is not None and current[0] != prev:
                 learning[0] = False
-                log(tr("log_learn_done", n=len(_enabled())))
+                log(trl("log_learn_done", n=len(_enabled())))
             elif current[0] != prev and not initial:
-                log(tr("log_prof_changed", n=current[0] + 1, x=x))
+                log(trl("log_prof_changed", n=current[0] + 1, x=x))
         elif learning[0]:
             empty = [i for i, v in enumerate(profiles) if not v]
             if empty:
                 idx = empty[0]; profiles[idx] = x; current[0] = idx
-                log(tr("log_learned", n=idx + 1, x=x))
+                log(trl("log_learned", n=idx + 1, x=x))
                 if len(empty) == 1:
                     learning[0] = False
-                    log(tr("log_learn_done", n=5))
+                    log(trl("log_learn_done", n=5))
             else:
                 learning[0] = False
                 current[0] = None
         else:
             current[0] = None                   # no cuadra: se indica, no se toca nada
             if not initial and x != last_dpi[0]:
-                log(tr("log_prof_unknown", x=x))
+                log(trl("log_prof_unknown", x=x))
         last_dpi[0] = x
         _save_profiles(); render_profiles()
         if not initial and current[0] is not None and current[0] != prev:
             return current[0]
         return None
 
+    # ---- escritor de DPI (hilo propio) -------------------------------------------
+    # Los cambios de DPI de los perfiles y del sniper van por UN hilo y en orden:
+    # la ventana no espera al raton (si el receptor esta ocupado, antes se podia
+    # congelar mas de un segundo) y, si llegan varios seguidos, solo se manda el
+    # ultimo. Nunca escribe en la memoria del raton (NOSTORE).
+    dpi_q = queue.Queue()
+
+    def set_dpi_async(x):
+        dpi_q.put(int(x))
+
+    def _dpi_worker():
+        while True:
+            x = dpi_q.get()
+            if x is None:
+                return
+            while not dpi_q.empty():                 # solo importa el ultimo
+                nxt = dpi_q.get_nowait()
+                if nxt is None:
+                    return
+                x = nxt
+            if mouse.dev is None:
+                continue
+            try:
+                mouse.set_dpi(x, persist=False)
+            except Exception as e:
+                uiq.put(lambda e=e: log(f"[!] {e}"))
+                # el bucle automatico vuelve a mandarlo si el raton no lo tiene
+
     # ---- aplicar perfiles (modo control) ---------------------------------------
     def apply_profile(i, announce=True):
         """Aplica el perfil i al raton (sin tocar su memoria interna)."""
         if i is None or not (0 <= i < 5) or not profiles[i] or mouse.dev is None:
             return
-        try:
-            mouse.set_dpi(profiles[i], persist=False)
-        except Exception as e:
-            log(f"[ERROR] {e}"); return
+        if sniper_state["active"]:
+            sniper_state["prev"] = profiles[i]           # al soltar el sniper vuelve a ESTE perfil
+        else:
+            set_dpi_async(profiles[i])
         current[0] = i; last_dpi[0] = profiles[i]
         _save_profiles(); render_profiles()
         if announce:
-            log(tr("log_prof_changed", n=i + 1, x=profiles[i]))
+            log(trl("log_prof_changed", n=i + 1, x=profiles[i]))
             if notify_var.get():
                 show_toast(i)
+            blink_for(i)
 
     def step_profile(delta):
         en = _enabled()
@@ -1942,7 +3643,7 @@ def run_gui():
         if key in seen_unknown or len(seen_unknown) > 20:
             return
         seen_unknown.add(key)
-        log(tr("log_btn_raw", rid=f"0x{raw[0]:02X}", data=" ".join(f"{b:02X}" for b in raw[:8])))
+        log(trl("log_btn_raw", rid=f"0x{raw[0]:02X}", data=" ".join(f"{b:02X}" for b in raw[:8])))
 
     def on_button(code):
         """Pulsacion recibida del raton (hilo de Tk, via cola)."""
@@ -1951,67 +3652,113 @@ def run_gui():
         if not verified[0]:
             verified[0] = True; verify_deadline[0] = None
             presets["control_verified"] = True; save_presets(presets)
-            log(tr("log_ctrl_verified"))
+            log(trl("log_ctrl_verified"))
         if code not in buttons_seen:                     # boton nuevo: aparece en la pestana
             buttons_seen.append(code)
             presets["buttons_seen"] = buttons_seen; save_presets(presets)
-            log(tr("log_btn_new", name=btn_name(code)))
+            log(trl("log_btn_new", name=btn_name(code)))
             build_btn_rows()
         flash_btn(code)
         exec_rep4(code)
 
-    # ---- interfaz de la pestana Perfiles ----------------------------------------
-    LBL_OFF = MUTED
-    LBL_ON  = GREEN
-    mode_var = tk.StringVar()
-    ttk.Label(tab_perf, textvariable=mode_var, style="Muted.TLabel").pack(anchor="w", padx=12, pady=(10, 0))
-    active_var = tk.StringVar()
-    ttk.Label(tab_perf, textvariable=active_var, style="Active.TLabel",
-              wraplength=500, justify="left").pack(anchor="w", padx=12, pady=(2, 8))
+    def on_button_release(code):
+        """Un boton especial del raton se ha SOLTADO (lo necesita el sniper)."""
+        if ctrl_on[0] and _rep4_action(code) == "sniper":
+            sniper_q.put(False)
 
-    pf = ttk.Frame(tab_perf); pf.pack(fill="x", padx=12)
-    pf.columnconfigure(2, minsize=96)
-    row_mark, row_name, row_entry, prof_vars = [], [], [], []
+    LBL_OFF = FG3
+    LBL_ON  = T["LINK"]
+    LED_KEYS = ["led_red", "led_green", "led_blue", "led_turq", "led_yellow"]
+
+    pg_prof = new_page("profiles")
+    page_title(pg_prof, "nav_profiles")
+
+    # --- tarjeta "Perfil activo" ---------------------------------------------
+    act_card = Card(pg_prof, icon="profiles", title="active_hdr", min_h=68, wrap=300)
+    act_big = tk.Label(act_card.ctrl, bg=CARD, fg=FG, font=FONT_BIG, anchor="e")
+    act_big.pack(anchor="e")
+    act_small = tk.Label(act_card.ctrl, bg=CARD, fg=FG2, font=FONT_DESC, anchor="e")
+    act_small.pack(anchor="e")
+    mode_lbl = tk.Label(pg_prof, bg=BG, fg=FG3, font=FONT_DESC, anchor="w")
+    mode_lbl.pack(fill="x", pady=(px(6), 0))
+    mode_var = tk.StringVar()
+    mode_var.trace_add("write", lambda *_: mode_lbl.configure(text=mode_var.get()))
+    active_var = tk.StringVar()
+
+    # --- grupo "Tus perfiles" -------------------------------------------------
+    group_hdr(pg_prof, "my_profiles_hdr")
+    prof_stack = stack(pg_prof)
+    row_dot, row_card, row_entry, row_side, prof_vars = [], [], [], [], []
     for i in range(5):
-        mk = tk.Label(pf, width=2, anchor="w", bg=BG, fg=LBL_ON, font=("Segoe UI", 10, "bold"))
-        dot = tk.Label(pf, text="\u25CF", bg=BG, fg=PROFILE_COLORS[i], font=("Segoe UI", 13))
-        dot.grid(row=i, column=1, sticky="w", padx=(0, 6))
-        nm = tk.Label(pf, anchor="w", bg=BG, fg=LBL_OFF, font=("Segoe UI", 10), cursor="hand2")
+        c = Card(prof_stack, title=None, min_h=52, wrap=260)
+        dot = tk.Canvas(c.inner, width=px(10), height=px(10), bg=CARD, highlightthickness=0)
+        dot.grid(row=0, column=0, sticky="w", padx=(px(5), px(21)))
         v = tk.StringVar(value=(str(profiles[i]) if profiles[i] else ""))
-        en = ttk.Entry(pf, textvariable=v, width=8, justify="right")
-        un = ttk.Label(pf, text="DPI")
-        mk.grid(row=i, column=0, sticky="w", pady=2)
-        nm.grid(row=i, column=2, sticky="w", pady=2)
-        en.grid(row=i, column=3, sticky="w", pady=2)
-        un.grid(row=i, column=4, sticky="w", padx=(6, 0), pady=2)
-        nm.bind("<Button-1>", lambda _e, i=i: on_click_profile(i))
+        box, en = text_box(c.ctrl, v, 96, justify="right", placeholder_key="ph_off")
+        box.pack(side="left")
+        tk.Label(c.ctrl, text="DPI", bg=CARD, fg=FG2, font=FONT_ROW).pack(side="left", padx=(px(8), px(12)))
+        side = tk.Frame(c.ctrl, bg=CARD, width=px(84), height=px(32))
+        side.pack(side="left"); side.pack_propagate(False)
         en.bind("<Return>", lambda _e: save_profiles())
-        row_mark.append(mk); row_name.append(nm); row_entry.append(en); prof_vars.append(v)
+        v.trace_add("write", lambda *_, i=i: _render_row(i))
+        row_dot.append(dot); row_card.append(c); row_entry.append(en); row_side.append(side)
+        prof_vars.append(v)
+
+    def _render_row(i):
+        """Punto (relleno o solo contorno), descripcion y accion de una fila."""
+        c, dot, side = row_card[i], row_dot[i], row_side[i]
+        has = bool(profiles[i]) or bool(prof_vars[i].get().strip())
+        col = PROFILE_COLORS[i]
+        dot.delete("all")
+        if has:
+            paint(dot, "dot", 0, 0, px(10), px(10), fill=col)
+        else:
+            paint(dot, "dot", 0, 0, px(10), px(10), outline=col, width=max(1, px(1.5)))
+        c.title.configure(text=f"{tr('profile')} {i + 1}")
+        color = tr(LED_KEYS[i])
+        c.set_desc(tr("prof_led_desc", color=color) if has else tr("prof_off_desc", color=color))
+        for w in side.winfo_children(): w.destroy()
+        if current[0] == i and profiles[i] and mouse.dev is not None:
+            box = tk.Frame(side, bg=CARD); box.place(relx=1.0, rely=0.5, anchor="e")
+            ic = icon_label(box, "check", 14, FG2)
+            if ic: ic.pack(side="left", padx=(0, px(6)))
+            tk.Label(box, text=tr("lbl_in_use"), bg=CARD, fg=FG2, font=FONT_ROW).pack(side="left")
+        elif profiles[i] and ctrl_on[0]:
+            b = ttk.Button(side, text=tr("btn_use"), style="Btn.TButton",
+                           command=lambda i=i: on_click_profile(i))
+            b.place(relx=1.0, rely=0.5, anchor="e")
 
     def render_profiles():
-        for i in range(5):
-            on = (current[0] == i)
-            row_mark[i].configure(text=("\u25B6" if on else ""))
-            row_name[i].configure(text=f"{tr('profile')} {i + 1}",
-                                  fg=(LBL_ON if on else (FG if profiles[i] else LBL_OFF)),
-                                  font=("Segoe UI", 10, "bold" if on else "normal"))
         mode_var.set(tr("mode_ctrl") if ctrl_on[0] else tr("mode_compat"))
         try: render_btn_note()
         except NameError: pass
+        cur = current[0]
         if mouse.dev is None:
-            active_var.set(tr("prof_wait"))
+            state_txt = tr("prof_wait")
         elif ctrl_on[0] and not verified[0]:
-            active_var.set(tr("prof_verify"))
+            state_txt = tr("prof_verify")
         elif not ctrl_on[0] and learning[0]:
-            active_var.set(tr("prof_learning", n=len(_enabled())))
-        elif current[0] is not None and profiles[current[0]]:
-            active_var.set(tr("prof_active", n=current[0] + 1, x=profiles[current[0]]))
+            state_txt = tr("prof_learning", n=len(_enabled()))
+        elif cur is not None and profiles[cur]:
+            state_txt = None
         else:
-            active_var.set(tr("prof_unknown", x=last_dpi[0]))
+            state_txt = tr("prof_unknown", x=last_dpi[0])
+        if state_txt is None:
+            active_var.set(tr("prof_active", n=cur + 1, x=profiles[cur]))
+            act_card.set_desc(tr("active_desc"))
+            act_big.configure(text=f"{profiles[cur]} DPI")
+            act_small.configure(text=tr("active_small", n=cur + 1, color=tr(LED_KEYS[cur])))
+        else:
+            active_var.set(state_txt)
+            act_card.set_desc(state_txt)
+            act_big.configure(text="\u2014"); act_small.configure(text="")
+        for i in range(5):
+            _render_row(i)
+        update_tray_tip()
     reg(render_profiles)
 
     def on_click_profile(i):
-        """Clic en el nombre: en modo control activa ese perfil."""
+        """Boton "Usar": en modo control activa ese perfil."""
         if ctrl_on[0] and profiles[i]:
             apply_profile(i)
 
@@ -2026,21 +3773,21 @@ def run_gui():
             try:
                 x = int(t)
             except ValueError:
-                log(tr("err_dpi_range", n=i + 1, lo=DPI_MIN, hi=dmax)); return
+                log(trl("err_dpi_range", n=i + 1, lo=DPI_MIN, hi=dmax)); return
             if not (DPI_MIN <= x <= dmax):
-                log(tr("err_dpi_range", n=i + 1, lo=DPI_MIN, hi=dmax)); return
+                log(trl("err_dpi_range", n=i + 1, lo=DPI_MIN, hi=dmax)); return
             new.append(x)
         if not any(new):
-            log(tr("log_prof_none")); return
+            log(trl("log_prof_none")); return
         vals = [x for x in new if x]
         if len(vals) != len(set(vals)):
-            log(tr("log_dup_any"))
+            log(trl("log_dup_any"))
         changed_active = current[0] is not None and new[current[0]] != profiles[current[0]]
         profiles[:] = new
         if current[0] is None or not profiles[current[0]]:
             current[0] = _enabled()[0]; changed_active = True
         _save_profiles()
-        log(tr("log_prof_saved"))
+        log(trl("log_prof_saved"))
         if mouse.dev is not None and changed_active:
             if ctrl_on[0]:
                 apply_profile(current[0], announce=False)
@@ -2061,13 +3808,13 @@ def run_gui():
             for i, v in enumerate(prof_vars): v.set(str(profiles[i]))
             current[0] = 0
             apply_profile(0, announce=False)
-            log(tr("log_prof_reset"))
+            log(trl("log_prof_reset"))
         else:
             profiles[:] = [None] * 5
             for v in prof_vars: v.set("")
             learning[0] = True; current[0] = None; last_dpi[0] = None
             _save_profiles()
-            log(tr("log_relearn"))
+            log(trl("log_relearn"))
             start_compat()
         render_profiles()
 
@@ -2078,11 +3825,35 @@ def run_gui():
             if v.get() != want and root.focus_get() is not row_entry[i]:
                 v.set(want)
 
-    pbtn = ttk.Frame(tab_perf); pbtn.pack(fill="x", padx=12, pady=(8, 2))
-    reg_text(ttk.Button(pbtn, command=save_profiles), "btn_save_prof").pack(side="left", expand=True, fill="x", padx=(0, 4))
-    reg_text(ttk.Button(pbtn, command=lambda: start_wizard()), "btn_burn").pack(side="left", expand=True, fill="x", padx=(4, 0))
+    # --- frecuencia de sondeo (se aplica al elegir) -----------------------------
+    poll_card = Card(pg_prof, icon="speed", title="poll_title", desc="poll_desc", wrap=300)
+    poll_card.frame.pack_configure(pady=(px(20), px(2)))
+    poll_var = tk.IntVar(value=presets.get("poll_rate", 1000))
+    poll_show = tk.StringVar(value=f"{poll_var.get()} Hz")
+    poll_combo = ttk.Combobox(poll_card.ctrl, textvariable=poll_show, state="readonly", width=10,
+                              values=["1000 Hz", "500 Hz", "125 Hz"])
+    poll_combo.pack()
 
-    # ---- Asistente "Grabar en el raton" ------------------------------------------
+    @guard
+    def do_set_poll():
+        code = mouse.set_poll_rate(int(poll_var.get()))
+        presets["poll_rate"] = int(poll_var.get()); save_presets(presets)
+        log(trl("log_poll", hz=poll_var.get(), st=st_name(code, "en")))
+
+    def _on_poll(_e=None):
+        poll_var.set(int(poll_show.get().split()[0]))
+        do_set_poll()
+    poll_combo.bind("<<ComboboxSelected>>", _on_poll)
+
+    # --- acciones ------------------------------------------------------------
+    pacts = tk.Frame(pg_prof, bg=BG); pacts.pack(fill="x", pady=(px(20), 0))
+    reg_text(ttk.Button(pacts, style="Accent.TButton", command=save_profiles),
+             "btn_save_prof").pack(side="left")
+    reg_text(ttk.Button(pacts, style="Btn.TButton", command=lambda: start_wizard()),
+             "btn_burn_dots").pack(side="left", padx=(px(8), 0))
+    link(pacts, "link_reset", reset_profiles).pack(side="right")
+
+    # --- asistente "Grabar en el raton" (dialogo estilo Windows 11) -------------
     # Mete tus perfiles en la MEMORIA INTERNA del raton, para que al cerrar el
     # programa el raton tenga los mismos perfiles con su LED de color. Como no se
     # puede elegir la ranura por software, se hace guiado: el raton vuelve a su
@@ -2090,7 +3861,7 @@ def run_gui():
     # boton de perfil, y el programa graba ahi el DPI (y lo comprueba leyendolo).
     def start_wizard(after=None):
         if mouse.dev is None:
-            log(tr("log_burn_noconn")); return
+            log(trl("log_burn_noconn")); return
         if wizard_active[0]:
             return
         save_profiles()                               # valida y guarda lo que haya en las casillas
@@ -2098,40 +3869,99 @@ def run_gui():
         if not todo:
             return
         wizard_active[0] = True
-        was_ctrl = ctrl_on[0]
         release_control(announce=False)              # el raton gestiona sus perfiles (LED activo)
-        log(tr("log_burn_start"))
+        log(trl("log_burn_start"))
 
         win = tk.Toplevel(root); win.configure(bg=BG); win.resizable(False, False)
         win.title(tr("burn_title")); win.transient(root)
         try:
             if os.path.exists(_ico_path): win.iconbitmap(_ico_path)
         except Exception: pass
+        W = px(460)
+        top = tk.Frame(win, bg=CARD, width=W); top.pack(fill="x")
+        topi = tk.Frame(top, bg=CARD); topi.pack(fill="x", padx=px(24), pady=px(24))
+        t_title = tk.Label(topi, bg=CARD, fg=FG, font=FONT_BIG, anchor="w")
+        t_title.pack(fill="x")
+        t_step = tk.Label(topi, bg=CARD, fg=FG2, font=FONT_DESC, anchor="w")
+        t_step.pack(fill="x", pady=(px(2), px(10)))
+        prog = tk.Canvas(topi, height=px(3), bg=CARD, highlightthickness=0, width=W - px(48))
+        prog.pack(fill="x", pady=(0, px(16)))
+        msg = tk.Text(topi, bg=CARD, fg=FG, font=FONT_ROW, relief="flat", highlightthickness=0,
+                      bd=0, wrap="word", height=3, width=42, cursor="arrow")
+        msg.tag_configure("b", font=font(14, semibold=True))
+        msg.pack(fill="x")
+        will = tk.Frame(topi, bg=T["PANEL"], highlightthickness=1, highlightbackground=T["PANEL_BORDER"])
+        will.pack(fill="x", pady=(px(14), 0))
+        will_l = tk.Label(will, bg=T["PANEL"], fg=FG2, font=FONT_ROW)
+        will_l.pack(side="left", padx=px(12), pady=px(10))
+        will_r = tk.Label(will, bg=T["PANEL"], fg=FG, font=font(14, semibold=True))
+        will_r.pack(side="right", padx=px(12), pady=px(10))
+        dots = tk.Canvas(topi, height=px(14), bg=CARD, highlightthickness=0)
+        # zona de confirmaciones: ALTO FIJO de una linea; cada confirmacion se
+        # superpone a la anterior (la ultima queda arriba), asi la ventana no
+        # crece y el boton nunca se sale de la vista
+        done_box = tk.Frame(topi, bg=CARD, height=px(24)); done_box.pack(fill="x", pady=(px(10), 0))
+        done_box.pack_propagate(False)
+        foot = tk.Frame(win, bg=BG, highlightthickness=0); foot.pack(fill="x")
+        tk.Frame(foot, bg=CARD_BORDER, height=1).pack(fill="x")
+        fi = tk.Frame(foot, bg=BG); fi.pack(fill="x", padx=px(24), pady=px(20))
+        fi.grid_columnconfigure(0, weight=1, uniform="b"); fi.grid_columnconfigure(1, weight=1, uniform="b")
+        b_go = ttk.Button(fi, style="Accent.TButton"); b_go.grid(row=0, column=0, sticky="ew", padx=(0, px(4)))
+        b_cancel = ttk.Button(fi, style="Btn.TButton", text=tr("btn_cancel"))
+        b_cancel.grid(row=0, column=1, sticky="ew", padx=(px(4), 0))
         step = [0]
-        done = []
-        title = ttk.Label(win, style="H.TLabel"); title.pack(anchor="w", padx=16, pady=(14, 4))
-        cv = tk.Canvas(win, width=64, height=64, bg=BG, highlightthickness=0); cv.pack(pady=4)
-        msg = ttk.Label(win, wraplength=360, justify="center"); msg.pack(padx=16, pady=(4, 6))
-        res = ttk.Label(win, style="Muted.TLabel", wraplength=360, justify="center"); res.pack(padx=16)
-        bts = ttk.Frame(win); bts.pack(fill="x", padx=16, pady=(10, 14))
-        b_cancel = ttk.Button(bts, text=tr("btn_cancel")); b_cancel.pack(side="left", expand=True, fill="x", padx=(0, 4))
-        b_go = ttk.Button(bts); b_go.pack(side="left", expand=True, fill="x", padx=(4, 0))
+        done = []                                     # (indice, comprobado)
+
+        def _draw_prog():
+            prog.update_idletasks()
+            w = max(prog.winfo_width(), W - px(48)); n = len(todo); gap = px(4)
+            seg = (w - gap * (n - 1)) / float(n)
+            prog.delete("all")
+            for k in range(n):
+                x = k * (seg + gap)
+                prog.create_rectangle(x, 0, x + seg, px(3), outline="",
+                                      fill=(ACCENT if k <= step[0] else T["PROG_OFF"]))
+
+        def _draw_done():
+            for w in done_box.winfo_children(): w.destroy()
+            for (i, ok) in done:
+                row = tk.Frame(done_box, bg=CARD); row.place(x=0, y=0, relwidth=1, relheight=1)
+                row.lift()
+                ic = icon_label(row, "check", 12, FG2)
+                if ic: ic.pack(side="left", padx=(0, px(6)))
+                tk.Label(row, bg=CARD, fg=FG2, font=FONT_DESC, anchor="w",
+                         text=tr("burn_item", n=i + 1, color=tr(LED_KEYS[i]), x=profiles[i],
+                                 state=tr("burn_checked" if ok else "burn_unchecked"))).pack(side="left")
 
         def show():
+            msg.configure(state="normal"); msg.delete("1.0", "end")
             if step[0] >= len(todo):
-                title.configure(text=tr("burn_done_title"))
-                cv.delete("all")
+                t_title.configure(text=tr("burn_done_title")); t_step.pack_forget(); prog.pack_forget()
+                will.pack_forget()
+                dots.pack(fill="x", pady=(px(4), px(12)), before=msg); dots.delete("all")
                 for k, i in enumerate(todo):          # los colores grabados, en fila
-                    cv.create_oval(4 + k * 12, 26, 14 + k * 12, 36, fill=PROFILE_COLORS[i], outline="")
-                msg.configure(text=tr("burn_done_msg"))
-                res.configure(text=", ".join(done))
-                b_cancel.pack_forget()
+                    x = k * px(18)
+                    paint(dots, "dot", x, 0, x + px(12), px(12), fill=PROFILE_COLORS[i])
+                msg.insert("end", tr("burn_done_msg"))
+                msg.configure(state="disabled", height=2)
+                _draw_done()
+                b_cancel.grid_forget()
                 b_go.configure(text=tr("btn_close"), command=finish)
+                b_go.grid_configure(columnspan=2, padx=0)
                 return
             i = todo[step[0]]
-            title.configure(text=tr("burn_step", n=step[0] + 1, total=len(todo)))
-            cv.delete("all"); cv.create_oval(8, 8, 56, 56, fill=PROFILE_COLORS[i], outline="")
-            msg.configure(text=tr("burn_msg", color=tr(COLOR_KEYS[i]).upper(), n=i + 1, x=profiles[i]))
+            t_title.configure(text=tr("burn_title"))
+            t_step.configure(text=tr("burn_step2", n=step[0] + 1, total=len(todo)))
+            _draw_prog()
+            msg.tag_configure("dot", foreground=PROFILE_COLORS[i])
+            msg.insert("end", tr("burn_msg_a"))
+            msg.insert("end", "\u25CF ", "dot")
+            msg.insert("end", tr(LED_KEYS[i]), "b")
+            msg.insert("end", tr("burn_msg_b"))
+            msg.configure(state="disabled")
+            will_l.configure(text=tr("burn_will"))
+            will_r.configure(text=tr("burn_will_val", x=profiles[i], n=i + 1))
+            _draw_done()
             b_go.configure(text=tr("btn_burn_step"), command=burn)
 
         def burn():
@@ -2140,23 +3970,24 @@ def run_gui():
                 mouse.set_dpi(profiles[i], persist=True)      # VARSTORE: al perfil interno activo
                 x, _ = mouse.get_dpi()
             except Exception as e:
-                res.configure(text=f"[!] {e}"); return
+                log(f"[!] {e}"); return
             ok = (x == profiles[i])
-            done.append(f"{tr(COLOR_KEYS[i])} {profiles[i]}{' ✓' if ok else ' ?'}")
-            log(tr("log_burn_ok" if ok else "log_burn_check", color=tr(COLOR_KEYS[i]), x=profiles[i]))
+            done.append((i, ok))
+            log(trl("log_burn_ok" if ok else "log_burn_check", color=trl(COLOR_KEYS[i]), x=profiles[i]))
             step[0] += 1
-            res.configure(text=", ".join(done))
             show()
 
         def finish():
             wizard_active[0] = False
+            try: win.grab_release()
+            except Exception: pass
             try: win.destroy()
             except Exception: pass
             if step[0] >= len(todo):
-                log(tr("log_burn_done"))
+                log(trl("log_burn_done"))
                 presets["burned_profiles"] = list(profiles); save_presets(presets)
             else:
-                log(tr("log_burn_cancel"))
+                log(trl("log_burn_cancel"))
             if after is not None:                    # p. ej. cerrar el programa
                 root.after(100, after); return
             if mouse.dev is not None and ctrl_want[0]:
@@ -2170,41 +4001,32 @@ def run_gui():
         win.protocol("WM_DELETE_WINDOW", finish)
         show()
         win.update_idletasks()
-        win.geometry(f"+{root.winfo_rootx() + 60}+{root.winfo_rooty() + 120}")
+        win.geometry(f"{W}x{win.winfo_reqheight()}+{root.winfo_rootx() + px(150)}+{root.winfo_rooty() + px(90)}")
+        dark_titlebar(win)
         try: win.grab_set()
         except Exception: pass
 
-    reset_link = tk.Label(tab_perf, bg=BG, fg=MUTED, cursor="hand2", font=("Segoe UI", 9, "underline"))
-    reset_link.pack(anchor="e", padx=12, pady=(4, 0))
-    reset_link.bind("<Button-1>", lambda _e: reset_profiles())
-    reset_link.bind("<Enter>", lambda _e: reset_link.configure(fg=ACCENT2))
-    reset_link.bind("<Leave>", lambda _e: reset_link.configure(fg=MUTED))
-    reg(lambda: reset_link.configure(text="\u21BB " + tr("btn_reset_prof")))
+    # =====================================================================
+    # 7b) AJUSTES (se crea aqui: la logica del raton usa sus variables)
+    # =====================================================================
+    pg_set = new_page("settings")
+    page_title(pg_set, "nav_settings")
+    group_hdr(pg_set, "grp_mouse", first=True)
+    set_mouse = stack(pg_set)
 
-    ttk.Separator(tab_perf).pack(fill="x", padx=12, pady=8)
+    model_card = Card(set_mouse, icon="settings", title="model_title", desc="model_desc", wrap=170)
+    # el valor interno es el nombre del modelo; lo que se ve se traduce («Auto-detectar»)
+    model_show = tk.StringVar()
+    model_combo = ttk.Combobox(model_card.ctrl, textvariable=model_show, state="readonly", width=20)
+    model_combo.pack(side="left")
 
-    # ---- Tasa de sondeo -------------------------------------------------------
-    prow = ttk.Frame(tab_perf); prow.pack(fill="x", padx=12, pady=(0, 10))
-    reg_text(ttk.Label(prow), "poll_lbl").pack(side="left")
-    poll_var = tk.IntVar(value=presets.get("poll_rate", 1000))
-    ttk.Combobox(prow, textvariable=poll_var, width=7, state="readonly",
-                 values=[125, 500, 1000]).pack(side="left", padx=8)
-    ttk.Label(prow, text="Hz").pack(side="left")
+    def _model_label(n):
+        return tr("model_auto") if n == AUTO_NAME else n
 
-    @guard
-    def do_set_poll():
-        code = mouse.set_poll_rate(int(poll_var.get()))
-        presets["poll_rate"] = int(poll_var.get()); save_presets(presets)
-        log(tr("log_poll", hz=poll_var.get(), st=st_name(code)))
-    reg_text(ttk.Button(prow, command=do_set_poll), "btn_apply").pack(side="right")
-
-    # ---- Opciones > Raton ---------------------------------------------------------
-    reg_text(ttk.Label(tab_opts, style="H.TLabel"), "mouse_hdr").pack(anchor="w", padx=12, pady=(12, 2))
-    mrow = ttk.Frame(tab_opts); mrow.pack(fill="x", padx=12)
-    reg_text(ttk.Label(mrow), "model_lbl").pack(side="left")
-    model_combo = ttk.Combobox(mrow, textvariable=model_var, values=model_names,
-                               state="readonly", width=26)
-    model_combo.pack(side="left", padx=6)
+    def _sync_model_combo():
+        model_combo.configure(values=[_model_label(n) for n in model_names])
+        model_show.set(_model_label(model_var.get()))
+    reg(_sync_model_combo)
 
     def reconnect(_e=None):
         if mouse.dev is not None:
@@ -2213,8 +4035,14 @@ def run_gui():
             except Exception: pass
             state_conn[0] = None; render_status()
         connect_mouse(manual=True)
-    model_combo.bind("<<ComboboxSelected>>", reconnect)
-    reg_text(ttk.Button(mrow, command=reconnect), "btn_reconnect").pack(side="right")
+    def _on_model_sel(_e=None):
+        k = model_combo.current()
+        if 0 <= k < len(model_names):
+            model_var.set(model_names[k])
+        reconnect()
+    model_combo.bind("<<ComboboxSelected>>", _on_model_sel)
+    reg_text(ttk.Button(model_card.ctrl, style="Btn.TButton", command=reconnect, width=9),
+             "btn_reconnect").pack(side="left", padx=(px(8), 0))
 
     ctrl_var = tk.BooleanVar(value=ctrl_want[0])
     def _toggle_ctrl(*_):
@@ -2230,21 +4058,150 @@ def run_gui():
             start_compat()
         render_profiles()
     ctrl_var.trace_add("write", _toggle_ctrl)
-    reg_text(ttk.Checkbutton(tab_opts, variable=ctrl_var), "chk_control").pack(anchor="w", padx=12, pady=(4, 0))
+    c = Card(set_mouse, icon="sync", title="ctrl_title", desc="ctrl_desc")
+    Toggle(c.ctrl, ctrl_var).frame.pack()
 
     notify_var = tk.BooleanVar(value=presets.get("notify_popup", False))
     def _save_notify(*_):
         presets["notify_popup"] = notify_var.get(); save_presets(presets)
     notify_var.trace_add("write", _save_notify)
-    reg_text(ttk.Checkbutton(tab_opts, variable=notify_var), "chk_notify").pack(anchor="w", padx=12, pady=(0, 0))
+    c = Card(set_mouse, icon="bell", title="notify_title", desc="notify_desc")
+    Toggle(c.ctrl, notify_var).frame.pack()
+
     ask_exit_var = tk.BooleanVar(value=presets.get("ask_burn_on_exit", True))
     def _save_ask(*_):
         presets["ask_burn_on_exit"] = ask_exit_var.get(); save_presets(presets)
     ask_exit_var.trace_add("write", _save_ask)
-    reg_text(ttk.Checkbutton(tab_opts, variable=ask_exit_var), "chk_ask_exit").pack(anchor="w", padx=12, pady=(0, 0))
+    c = Card(set_mouse, icon="download", title="ask_exit_title", desc="ask_exit_desc")
+    Toggle(c.ctrl, ask_exit_var).frame.pack()
 
-    ttk.Separator(tab_opts).pack(fill="x", padx=12, pady=8)
+    # --- avisos de bateria (la logica esta junto al aviso de perfil) ---------------
+    group_hdr(pg_set, "grp_battery")
+    set_batt = stack(pg_set)
+    batt_alert_var = tk.BooleanVar(value=presets.get("batt_alert", True))
+    batt_full_var = tk.BooleanVar(value=presets.get("batt_full", True))
 
+    def _save_batt_opts(*_):
+        presets["batt_alert"] = batt_alert_var.get(); presets["batt_full"] = batt_full_var.get()
+        save_presets(presets)
+    batt_alert_var.trace_add("write", _save_batt_opts); batt_full_var.trace_add("write", _save_batt_opts)
+    c = Card(set_batt, icon="bell", title="batt_alert_title", desc="batt_alert_desc")
+    reg_text(ttk.Button(c.ctrl, style="Btn.TButton", command=lambda: test_batt_popup(), width=8),
+             "batt_test_btn").pack(side="left", padx=(0, px(12)))
+    Toggle(c.ctrl, batt_alert_var).frame.pack(side="left")
+    c = Card(set_batt, icon="power", title="batt_full_title", desc="batt_full_desc")
+    Toggle(c.ctrl, batt_full_var).frame.pack()
+
+    # --- apariencia: tema + claro/oscuro + temas propios ---------------------------
+    # El tema se aplica al REINICIAR (la interfaz se monta con sus colores y
+    # formas). Al cambiarlo aparece una tarjeta con "Reiniciar ahora".
+    group_hdr(pg_set, "grp_appearance")
+    set_look = stack(pg_set)
+    c = Card(set_look, icon="color", title="theme_title", desc="theme_desc")
+    theme_show = tk.StringVar()
+    theme_combo = ttk.Combobox(c.ctrl, textvariable=theme_show, state="readonly", width=16)
+    theme_combo.pack()
+    _theme_keys = [k for k in THEMES if not THEMES[k].get("secret") or MV_UNLOCKED]
+    theme_card = c
+    mv_logo_card = image_frames(MV_LOGO, px(20), shaped=False)
+    if MV_UNLOCKED and mv_logo_card:                   # el logo en lugar de la paleta
+        if theme_card.icon is None:
+            theme_card.icon = tk.Label(theme_card.inner, bg=CARD)
+            theme_card.icon.grid(row=0, column=0, sticky="w", padx=(0, px(16)))
+        theme_card.icon.configure(image=mv_logo_card[0][0], text="")
+        theme_card.icon._img = mv_logo_card[0][0]
+
+    def _sync_theme_combo():
+        theme_combo.configure(values=[theme_label(k) for k in _theme_keys])
+        k = presets.get("theme", THEME_NAME)
+        theme_show.set(theme_label(k if k in THEMES else THEME_NAME))
+    reg(_sync_theme_combo)
+
+    restart_card = Card(set_look, icon="sync", title="theme_restart_title", desc="theme_restart_desc")
+    reg_text(ttk.Button(restart_card.ctrl, style="Accent.TButton", command=lambda: restart_app()),
+             "theme_restart_btn").pack()
+    restart_card.frame.pack_forget()
+
+    def _theme_pending():
+        """Muestra 'Reiniciar ahora' si lo elegido no es lo que esta en pantalla."""
+        want = (presets.get("theme", "basic"), presets.get("theme_mode", "dark"))
+        if want != (THEME_NAME, THEME_MODE):
+            if not restart_card.frame.winfo_ismapped():
+                restart_card.frame.pack(fill="x", pady=(0, px(2)), after=dark_card.frame)
+        elif restart_card.frame.winfo_ismapped():
+            restart_card.frame.pack_forget()
+
+    def _on_theme(_e=None):
+        k = theme_combo.current()
+        if 0 <= k < len(_theme_keys):
+            presets["theme"] = _theme_keys[k]; save_presets(presets)
+            _dark_avail(); _theme_pending()
+    theme_combo.bind("<<ComboboxSelected>>", _on_theme)
+
+    dark_var = tk.BooleanVar(value=(presets.get("theme_mode", THEME_MODE) != "light"))
+    dark_card = Card(set_look, icon="bright", title="dark_title", desc="dark_desc")
+    dark_tg = Toggle(dark_card.ctrl, dark_var); dark_tg.frame.pack()
+
+    def _dark_avail():
+        th = THEMES.get(presets.get("theme", THEME_NAME), {})
+        dark_tg.set_enabled(not th.get("secret"))
+    _dark_avail()
+
+    def _on_dark(*_):
+        presets["theme_mode"] = "dark" if dark_var.get() else "light"; save_presets(presets)
+        _theme_pending()
+    dark_var.trace_add("write", _on_dark)
+
+    THEME_TEMPLATE_NOTE = (
+        "Non-Synapse-Mouse theme template. Files starting with '_' are ignored: copy this file, "
+        "rename it (e.g. neon.json), edit it and restart the app. Only what you write is changed; "
+        "the rest comes from 'base'. Colors: #RRGGBB. shape.style: round | square | chamfer | diamond. "
+        "shape.corner: size of rounded/cut corners (px). shape.border: outline width (px). "
+        "shape.glow: neon halo around active parts. font: optional, must be installed in Windows.")
+
+    def write_theme_files():
+        """Crea la carpeta de temas con una plantilla completa y un ejemplo."""
+        os.makedirs(THEMES_DIR, exist_ok=True)
+        base = BUILTIN_THEMES["basic"]
+        tpl = {"_readme": THEME_TEMPLATE_NOTE,
+               "_colors": THEME_COLOR_KEYS,
+               "name": "My theme", "base": "basic",
+               "shape": dict(base["shape"]),
+               "dark": dict(base["dark"]), "light": dict(base["light"])}
+        neon = {"_readme": "Example. Rename to neon.json (without the '_') to try it.",
+                "name": "Neon", "base": "basic",
+                "shape": {"style": "chamfer", "corner": 7, "border": 1, "glow": True},
+                "dark": {"BG": "#0B0B10", "CARD": "#14141C", "CARD_BORDER": "#26263A",
+                         "CTRL": "#1B1B26", "CTRL_HOVER": "#232333", "CTRL_BORDER": "#2E2E44",
+                         "FG": "#F2F2F2", "FG2": "#8DE9F0", "FG3": "#6B6B85",
+                         "ACCENT": "#FCEE0A", "ACCENT_HOVER": "#E5D800", "ON_ACCENT": "#000000",
+                         "LOG_BG": "#08080C", "LOG_BORDER": "#26263A", "SEG_OFF": "#2A2A3C",
+                         "SWITCH_OFF": "#00E5FF", "KNOB_OFF": "#00E5FF", "SLIDER_TRACK": "#3A3A55",
+                         "PANEL": "#101018", "PANEL_BORDER": "#26263A", "PROG_OFF": "#2A2A3C",
+                         "POPUP_BORDER": "#FCEE0A", "SELECT_BG": "#2E2E44", "LINK": "#FCEE0A"}}
+        for fn, data in (("_template.json", tpl), ("_example-neon.json", neon)):
+            path = os.path.join(THEMES_DIR, fn)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+
+    def open_themes_folder():
+        try:
+            write_theme_files()
+            if sys.platform == "win32":
+                os.startfile(THEMES_DIR)                 # noqa (solo Windows)
+            else:
+                webbrowser.open("file://" + THEMES_DIR)
+            log(trl("log_themes_folder", path=THEMES_DIR))
+        except Exception as e:
+            log(f"[!] {e}")
+
+    c = Card(set_look, icon="code", title="themes_custom_title", desc="themes_custom_desc")
+    reg_text(ttk.Button(c.ctrl, style="Btn.TButton", command=open_themes_folder),
+             "themes_custom_btn").pack()
+
+    # =====================================================================
+    # 7c) BOTONES (remapeo)
+    # =====================================================================
     # ---- Pestana Mapeo ------------------------------------------------------------
     # Dos familias de botones:
     #  1) Botones que Windows deja interceptar (central, laterales, inclinacion de
@@ -2256,7 +4213,7 @@ def run_gui():
     # Los clics izquierdo y derecho no se remapean nunca (seguridad).
     DEFAULT_BTN_MAP = {REP4_PROFILE: "next", REP4_DPI_CYCLE: "next",
                        REP4_DPI_UP: "next", REP4_DPI_DN: "prev"}
-    PRESET_ACTIONS = (["default", "none", "next", "prev", "p1", "p2", "p3", "p4", "p5",
+    PRESET_ACTIONS = (["default", "none", "next", "prev", "sniper", "p1", "p2", "p3", "p4", "p5",
                        "click_left", "click_right", "click_middle", "click_back", "click_forward",
                        "dblclick", "key:ctrl+c", "key:ctrl+v", "key:ctrl+x", "key:ctrl+z",
                        "key:ctrl+y", "key:enter", "key:esc", "key:tab", "key:space",
@@ -2264,6 +4221,7 @@ def run_gui():
                        "key:media_next", "key:media_prev", "key:vol_up", "key:vol_down",
                        "key:vol_mute"])
     ACTION_KEYS = {"default": "act_default", "none": "act_none", "next": "act_next", "prev": "act_prev",
+                   "sniper": "act_sniper",
                    "click_left": "act_lclick", "click_right": "act_rclick", "click_middle": "act_mclick",
                    "click_back": "act_back", "click_forward": "act_forward", "dblclick": "act_dbl",
                    "key:ctrl+c": "act_copy", "key:ctrl+v": "act_paste", "key:ctrl+x": "act_cut",
@@ -2273,6 +4231,7 @@ def run_gui():
                    "key:printscreen": "act_prtsc", "key:media_play": "act_play",
                    "key:media_next": "act_nexttrk", "key:media_prev": "act_prevtrk",
                    "key:vol_up": "act_volup", "key:vol_down": "act_voldn", "key:vol_mute": "act_mute"}
+    NO_RELEASE_BTNS = {"wheel_up", "wheel_down", "tilt_l", "tilt_r"}    # sin evento de "soltar"
     SOFT_NAME_KEYS = {"middle": "sb_middle", "wheel_up": "sb_wup", "wheel_down": "sb_wdn",
                       "x1": "sb_x1", "x2": "sb_x2", "tilt_l": "sb_tiltl", "tilt_r": "sb_tiltr"}
     BTN_NAME_KEYS = {REP4_PROFILE: "bn_profile", REP4_DPI_CYCLE: "bn_dpicycle",
@@ -2314,16 +4273,61 @@ def run_gui():
             i = int(a[1]) - 1
             if profiles[i]: apply_profile(i)
 
+    # ---- sniper: DPI bajo mientras se mantiene un boton -----------------------------
+    # Se puede asignar a cualquier boton con evento de "soltar" (laterales, central,
+    # y los que avisa el raton). Al pulsar baja al DPI del sniper; al soltar vuelve
+    # al del perfil activo. Las ordenes pasan por una cola a un hilo propio para
+    # respetar el orden y no bloquear ni el gancho de Windows ni la interfaz.
+    sniper_dpi = [int(presets.get("sniper_dpi", 400))]
+    sniper_state = {"active": False, "prev": None}
+    sniper_q = queue.Queue()
+
+    def _sniper_worker():
+        while True:
+            job = sniper_q.get()
+            if job is None:
+                return
+            try:
+                if job and not sniper_state["active"]:
+                    if mouse.dev is None:
+                        continue
+                    cur = current[0]
+                    prev = profiles[cur] if (cur is not None and profiles[cur]) else last_dpi[0]
+                    dmax = (active_model[0] or current_model())["dpi_max"]
+                    x = max(DPI_MIN, min(dmax, sniper_dpi[0]))
+                    sniper_state["active"] = True; sniper_state["prev"] = prev
+                    set_dpi_async(x)
+                    uiq.put(lambda x=x: log(trl("log_sniper_on", x=x)))
+                elif (not job) and sniper_state["active"]:
+                    prev = sniper_state["prev"]
+                    sniper_state["active"] = False
+                    if prev and mouse.dev is not None:
+                        set_dpi_async(prev); last_dpi[0] = prev
+                        uiq.put(lambda x=prev: log(trl("log_sniper_off", x=x)))
+            except Exception as e:
+                sniper_state["active"] = False
+                uiq.put(lambda e=e: log(f"[ERROR] {e}"))
+
+    def _rep4_action(code):
+        a = button_map.get(code, "default")
+        return DEFAULT_BTN_MAP.get(code, "none") if a == "default" else a
+
     last_prof_act = [0.0]
 
-    def exec_action(a, down, has_up):
+    def exec_action(a, down, has_up, debounce=True):
         """Ejecuta una accion. down/has_up permiten mantener pulsado (teclas y
-        clics se sueltan cuando se suelta el boton original)."""
+        clics se sueltan cuando se suelta el boton original). debounce: un giro
+        de rueda manda varias senales seguidas y solo debe cambiar UN perfil;
+        los botones del raton (Report 4) llegan limpios y no lo necesitan."""
         if a in ("none", "default"):
+            return
+        if a == "sniper":
+            if has_up:                                     # la rueda no tiene "soltar"
+                sniper_q.put(bool(down))
             return
         if a in ("next", "prev") or (a.startswith("p") and a[1:].isdigit()):
             now = time.time()
-            if down and now - last_prof_act[0] >= 0.25:     # un giro de rueda = un solo cambio
+            if down and (not debounce or now - last_prof_act[0] >= 0.25):   # un giro de rueda = un solo cambio
                 last_prof_act[0] = now
                 uiq.put(lambda a=a: run_action(a))
             return
@@ -2350,10 +4354,11 @@ def run_gui():
                 send_input_keys(vks, True); send_input_keys(vks, False)
 
     def exec_rep4(code):
-        a = button_map.get(code, "default")
-        if a == "default":
-            a = DEFAULT_BTN_MAP.get(code, "none")
-        exec_action(a, True, False)
+        a = _rep4_action(code)
+        if a == "sniper":
+            sniper_q.put(True)                             # se suelta en on_button_release
+            return
+        exec_action(a, True, False, debounce=False)    # pulsaciones rapidas: ninguna se pierde
 
     # --- gancho de Windows ---
     remapper = SoftRemapper(get_action=lambda b: soft_map.get(b, "default"),
@@ -2361,42 +4366,91 @@ def run_gui():
                             do_action=exec_action)
     SOFT_OK = SoftRemapper.supported()
 
-    st.configure("Warn.TLabel", background=BG, foreground=YELL)
-    reg_text(ttk.Label(tab_btn, style="Warn.TLabel", wraplength=510, justify="left"),
-             "map_warn").pack(anchor="w", padx=12, pady=(10, 4))
+    pg_btn = new_page("buttons")
+    page_title(pg_btn, "nav_buttons")
     soft_var = tk.BooleanVar(value=bool(presets.get("soft_remap", False)) and SOFT_OK)
-    soft_chk = ttk.Checkbutton(tab_btn, variable=soft_var, state=("normal" if SOFT_OK else "disabled"))
-    soft_chk.pack(anchor="w", padx=12)
-    reg(lambda: soft_chk.configure(text=tr("chk_soft" if SOFT_OK else "chk_soft_na")))
+    soft_card = Card(pg_btn, icon="warn", title="soft_title",
+                     desc=("soft_desc" if SOFT_OK else "soft_desc_na"), min_h=64, wrap=300)
+    soft_card.frame.pack_configure(pady=(px(8), px(2)))
+    soft_toggle = Toggle(soft_card.ctrl, soft_var, enabled=SOFT_OK)
+    soft_toggle.frame.pack()
 
     def _toggle_soft(*_):
         presets["soft_remap"] = soft_var.get(); save_presets(presets)
         if soft_var.get():
             if remapper.start():
-                log(tr("log_soft_on"))
+                log(trl("log_soft_on"))
             else:
-                log(tr("log_soft_fail")); soft_var.set(False)
+                log(trl("log_soft_fail")); soft_var.set(False)
         else:
-            remapper.stop(); log(tr("log_soft_off"))
+            remapper.stop(); log(trl("log_soft_off"))
+        build_btn_rows()
     soft_var.trace_add("write", _toggle_soft)
 
-    btn_rows = ttk.Frame(tab_btn); btn_rows.pack(fill="x", padx=12, pady=(6, 0))
-    btn_rows.columnconfigure(1, minsize=200)
+    group_hdr(pg_btn, "grp_sniper")
+    sn_card = Card(pg_btn, icon="speed", title="sniper_title", desc="sniper_desc")
+    sn_var = tk.StringVar(value=str(sniper_dpi[0]))
+    sn_box, sn_en = text_box(sn_card.ctrl, sn_var, 96, justify="right")
+    sn_box.pack(side="left")
+    tk.Label(sn_card.ctrl, text="DPI", bg=CARD, fg=FG2, font=FONT_ROW).pack(side="left", padx=(px(8), 0))
+
+    def save_sniper(_e=None):
+        dmax = (active_model[0] or current_model())["dpi_max"]
+        try:
+            x = int(sn_var.get().strip())
+        except ValueError:
+            x = 0
+        if not (DPI_MIN <= x <= dmax):
+            log(trl("err_sniper", lo=DPI_MIN, hi=dmax)); sn_var.set(str(sniper_dpi[0])); return
+        sniper_dpi[0] = x; presets["sniper_dpi"] = x; save_presets(presets)
+    sn_en.bind("<Return>", save_sniper); sn_en.bind("<FocusOut>", save_sniper)
+
+    win_hdr, _wn = group_hdr(pg_btn, "grp_win_btns")
+    win_note_lbl = tk.Label(win_hdr, bg=BG, fg=FG3, font=FONT_DESC)
+    win_rows = stack(pg_btn)
+    _, mouse_note = group_hdr(pg_btn, "grp_mouse_btns", note_key="grp_mouse_note")
+    btn_note = tk.Label(pg_btn, bg=BG, fg=FG2, font=FONT_DESC, anchor="w", justify="left",
+                        wraplength=px(540))
+    autowrap(btn_note, pg_btn, 8, lo=240, hi=900)
+    mouse_rows = stack(pg_btn)
     btn_flash = {}
-    btn_note = ttk.Label(tab_btn, style="Muted.TLabel", wraplength=510, justify="left")
+
+    _btn_ctrl_seen = [None]
+
+    def _render_sniper_dim():
+        """El sniper solo sirve si hay donde asignarlo: remapeo o modo control."""
+        dim = not (soft_var.get() or ctrl_on[0])
+        sn_card.title.configure(fg=(FG3 if dim else FG))
+        sn_en.configure(state=("disabled" if dim else "normal"), disabledbackground=CTRL,
+                        disabledforeground=FG3)
 
     def render_btn_note():
+        if _btn_ctrl_seen[0] is not None and _btn_ctrl_seen[0] != ctrl_on[0]:
+            _btn_ctrl_seen[0] = ctrl_on[0]
+            build_btn_rows()                       # cambia el modo: las filas se (des)activan
+            return
+        _btn_ctrl_seen[0] = ctrl_on[0]
+        _render_sniper_dim()
+        if SOFT_OK and not soft_var.get():
+            win_note_lbl.configure(text=tr("btn_disabled_note"))
+            win_note_lbl.pack(side="left", padx=(px(10), 0))
+        else:
+            win_note_lbl.pack_forget()
         if ctrl_on[0]:
             btn_note.pack_forget()
         else:
             btn_note.configure(text=tr("btn_compat"))
-            btn_note.pack(anchor="w", padx=12, pady=(6, 0))
+            btn_note.pack(fill="x", pady=(0, px(8)), before=mouse_rows)
 
-    def _row(r, key, name, cur, is_soft, store):
-        fl = tk.Label(btn_rows, text="\u25CF", bg=BG, fg=LBL_OFF, font=("Segoe UI", 11))
-        fl.grid(row=r, column=0, sticky="w", padx=(0, 6), pady=1)
-        ttk.Label(btn_rows, text=name).grid(row=r, column=1, sticky="w", pady=1)
-        acts = list(PRESET_ACTIONS)
+    def _row(parent, key, name, cur, is_soft, store):
+        # en gris e inseleccionable si esa familia de botones esta apagada:
+        # los de Windows dependen del remapeo; los del raton, del modo control
+        dim = (not soft_var.get()) if is_soft else (not ctrl_on[0])
+        c = Card(parent, min_h=42)
+        c.title.configure(text=name, fg=(FG3 if dim else FG))
+        ind = tk.Frame(c.ctrl, bg=CARD)
+        ind.pack(side="left", padx=(0, px(10)))
+        acts = [a for a in PRESET_ACTIONS if not (a == "sniper" and key in NO_RELEASE_BTNS)]
         if cur.startswith("key:") and cur not in acts:
             acts.append(cur)                       # combinacion personalizada guardada
         acts.append("custom")
@@ -2407,9 +4461,11 @@ def run_gui():
                 return tr("act_default_rep4", act=act_label(DEFAULT_BTN_MAP.get(key, "none")))
             return act_label(a)
         labels = [_lab(a) for a in acts]
-        cb = ttk.Combobox(btn_rows, state="readonly", width=24, values=labels, height=16)
+        cb = ttk.Combobox(c.ctrl, state="readonly", width=27, values=labels, height=16)
         cb.current(acts.index(cur) if cur in acts else 0)
-        cb.grid(row=r, column=2, sticky="w", pady=1)
+        cb.pack(side="left")
+        if dim:
+            cb.configure(state="disabled")
 
         def on_sel(_e, key=key, cb=cb, acts=acts, name=name, labels=labels):
             a = acts[cb.current()]
@@ -2418,7 +4474,7 @@ def run_gui():
                 txt = simpledialog.askstring(tr("custom_title"), tr("custom_prompt"), parent=root)
                 if not txt or parse_combo(txt) is None:
                     if txt:
-                        log(tr("log_custom_bad", keys=txt))
+                        log(trl("log_custom_bad", keys=txt))
                     build_btn_rows(); return
                 a = "key:" + "+".join(p.strip().lower() for p in txt.replace("-", "+").split("+") if p.strip())
             store[key] = a
@@ -2427,25 +4483,22 @@ def run_gui():
             else:
                 presets["button_map"] = {str(k): v for k, v in button_map.items()}
             save_presets(presets)
-            log(tr("log_btn_set", name=name, act=(labels[acts.index(a)] if a in acts else act_label(a))))
+            log(trl("log_btn_set", name=name, act=(labels[acts.index(a)] if a in acts else act_label(a))))
             build_btn_rows()
         cb.bind("<<ComboboxSelected>>", on_sel)
-        btn_flash[key] = fl
+        btn_flash[key] = ind
 
     def build_btn_rows():
-        for w in btn_rows.winfo_children():
-            w.destroy()
+        for box in (win_rows, mouse_rows):
+            for w in box.winfo_children():
+                w.destroy()
         btn_flash.clear()
-        r = 0
         for b in SOFT_BUTTONS:
             if b in SOFT_ONLY_IF_SEEN and b not in soft_seen:
                 continue
-            _row(r, b, tr(SOFT_NAME_KEYS[b]), soft_map.get(b, "default"), True, soft_map); r += 1
-        ttk.Separator(btn_rows).grid(row=r, column=0, columnspan=3, sticky="ew", pady=(6, 2)); r += 1
-        ttk.Label(btn_rows, text=tr("map_hdr_rep4"), style="Muted.TLabel", wraplength=500,
-                  justify="left").grid(row=r, column=0, columnspan=3, sticky="w", pady=(0, 2)); r += 1
+            _row(win_rows, b, tr(SOFT_NAME_KEYS[b]), soft_map.get(b, "default"), True, soft_map)
         for code in buttons_seen:
-            _row(r, code, btn_name(code), button_map.get(code, "default"), False, button_map); r += 1
+            _row(mouse_rows, code, btn_name(code), button_map.get(code, "default"), False, button_map)
         render_btn_note()
     reg(build_btn_rows)
 
@@ -2457,33 +4510,74 @@ def run_gui():
         flash_btn(b)
 
     def flash_btn(key):
-        fl = btn_flash.get(key)
-        if fl is None or not fl.winfo_exists(): return
-        fl.configure(fg=GREEN)
-        root.after(600, lambda: fl.winfo_exists() and fl.configure(fg=LBL_OFF))
+        """Indicador de pulsacion: punto verde + "Pulsado" durante ~600 ms."""
+        ind = btn_flash.get(key)
+        if ind is None or not ind.winfo_exists(): return
+        for w in ind.winfo_children(): w.destroy()
+        d = tk.Canvas(ind, width=px(6), height=px(6), bg=CARD, highlightthickness=0)
+        paint(d, "dot", 0, 0, px(6), px(6), fill=ACCENT)
+        d.pack(side="left", padx=(0, px(6)))
+        tk.Label(ind, text=tr("pressed"), bg=CARD, fg=FG2, font=FONT_DESC).pack(side="left")
+        def clear():
+            if ind.winfo_exists():
+                for w in ind.winfo_children(): w.destroy()
+        root.after(600, clear)
 
     render_btn_note()
 
     if soft_var.get():
-        root.after(500, lambda: (remapper.start() and log(tr("log_soft_on"))) or None)
+        root.after(500, lambda: (remapper.start() and log(trl("log_soft_on"))) or None)
 
-    # ---- Aviso emergente (toast) ---------------------------------------------
+    # ---- Aviso de cambio de perfil (tarjeta gris de Windows) --------------------
     toast_win = [None]
     toast_after = [None]
 
     def show_toast(i):
-        text = tr("toast", n=i + 1, x=profiles[i] or last_dpi[0])
+        x_dpi = profiles[i] or last_dpi[0]
         tw = toast_win[0]
         if tw is None or not tw.winfo_exists():
             tw = tk.Toplevel(root)
             tw.overrideredirect(True)           # sin bordes
-            tw.attributes("-topmost", True)     # siempre encima
-            try: tw.attributes("-alpha", 0.93)  # semitransparente
-            except Exception: pass
-            lbl = tk.Label(tw, font=("Segoe UI", 15, "bold"), fg="#eafff0",
-                           bg="#2ea043", padx=24, pady=16)
-            lbl.pack(); tw._lbl = lbl; toast_win[0] = tw
-        tw._lbl.configure(text=text, bg=PROFILE_COLORS[i], fg=PROFILE_TEXT[i])
+            tw.attributes("-topmost", True)     # siempre encima (sin transparencia)
+            tw.configure(bg=T["POPUP_BORDER"])
+            card = tk.Frame(tw, bg=CARD, width=px(320)); card.pack(padx=1, pady=1)
+            hdr = tk.Frame(card, bg=CARD); hdr.pack(fill="x", padx=px(16), pady=(px(12), 0))
+            hcv = tk.Canvas(hdr, width=px(14), height=px(14), bg=CARD, highlightthickness=0)
+            hcv.pack(side="left"); draw_mouse(hcv, px(7), px(7), px(14), FG2)
+            tk.Label(hdr, text=APP_NAME, bg=CARD, fg=FG2, font=FONT_DESC).pack(side="left", padx=(px(8), 0))
+            b_pct = tk.Label(hdr, bg=CARD, fg=FG2, font=FONT_DESC)      # bateria, arriba a la derecha
+            b_pct.pack(side="right")
+            b_ic = tk.Label(hdr, bg=CARD, fg=FG2, font=(icon_font(12) or FONT_DESC))
+            b_ic.pack(side="right", padx=(0, px(4)))
+            body = tk.Frame(card, bg=CARD); body.pack(fill="x", padx=px(16), pady=(px(12), px(14)))
+            circ = tk.Canvas(body, width=px(32), height=px(24), bg=CARD, highlightthickness=0)
+            circ.pack(side="left", padx=(0, px(10)))
+            txt = tk.Frame(body, bg=CARD); txt.pack(side="left")
+            l1 = tk.Frame(txt, bg=CARD); l1.pack(anchor="w")
+            big = tk.Label(l1, bg=CARD, fg=FG, font=FONT_BIG); big.pack(side="left")
+            tk.Label(l1, text=" DPI", bg=CARD, fg=FG2, font=font(13)).pack(side="left", anchor="s", pady=(0, px(2)))
+            sub = tk.Label(txt, bg=CARD, fg=FG2, font=FONT_DESC); sub.pack(anchor="w")
+            bar = tk.Canvas(card, height=px(4), width=px(320), bg=CARD, highlightthickness=0)
+            bar.pack(fill="x")
+            tw._parts = (circ, big, sub, bar, b_ic, b_pct); toast_win[0] = tw
+            tw.update_idletasks(); round_corners(tw)
+        circ, big, sub, bar, b_ic, b_pct = tw._parts
+        if batt_supported[0] and state_batt[0] is not None:
+            pct, chg = state_batt[0]
+            b_pct.configure(text=f"{pct} %")
+            b_ic.configure(text=(batt_glyph(pct, chg) if F_ICON else ""),
+                           fg=(LOW_BATT if (pct < 20 and not chg) else FG2))
+        else:
+            b_pct.configure(text=""); b_ic.configure(text="")
+        col = PROFILE_COLORS[i]
+        circ.delete("all"); paint(circ, "dot", px(4), 0, px(28), px(24), fill=col)
+        big.configure(text=str(x_dpi))
+        sub.configure(text=tr("toast_led", n=i + 1, color=tr(LED_KEYS[i])))
+        bar.delete("all")
+        W, gap = px(320), px(2); seg = (W - 4 * gap) / 5.0
+        for k in range(5):
+            x0 = k * (seg + gap)
+            bar.create_rectangle(x0, 0, x0 + seg, px(4), outline="", fill=(col if k <= i else SEG_OFF))
         tw.update_idletasks()
         w, h = tw.winfo_reqwidth(), tw.winfo_reqheight()
         sw, sh = tw.winfo_screenwidth(), tw.winfo_screenheight()
@@ -2494,32 +4588,168 @@ def run_gui():
             except Exception: pass
         toast_after[0] = root.after(2000, lambda: tw.winfo_exists() and tw.withdraw())
 
+    # ---- Avisos de bateria -------------------------------------------------------
+    # Ventana aparte, ARRIBA a la derecha (el aviso de perfil va abajo). Sale al
+    # cruzar 90, 80 ... 10, 8 ... 1 %, al llegar a 100 % cargando y siempre una vez
+    # al abrir el programa. La decision esta en battery_alert_step (funcion pura).
+    batt_win = [None]
+    batt_after = [None]
+    batt_alerted = set()
+    batt_first = [True]
+    batt_full_done = [False]
+
+    def draw_battery(cv, x, y, w, h, pct, color, chg):
+        """Icono de bateria dibujado a mano: contorno, relleno por nivel y rayo si carga."""
+        nub = max(2, px(3))
+        body_w = w - nub
+        paint(cv, "box", x, y, x + body_w, y + h, outline=FG2, width=max(1, px(1.5)), r=px(4))
+        paint(cv, "box", x + body_w + 1, y + h * 0.3, x + w, y + h * 0.7, fill=FG2, r=px(1))
+        pad = px(3.5)
+        full_w = body_w - 2 * pad
+        fw = int(full_w * max(0, min(100, pct)) / 100.0)
+        if pct > 0:
+            fw = max(px(2), fw)
+            paint(cv, "box", x + pad, y + pad, x + pad + fw, y + h - pad, fill=color, r=px(2))
+        if chg:                                           # rayo
+            cx, cy = x + body_w / 2.0, y + h / 2.0
+            u = h / 10.0
+            bolt = [(0.6, -3.6), (-1.8, 0.4), (-0.1, 0.4), (-0.6, 3.6), (1.8, -0.5), (0.1, -0.5)]
+            paint_poly(cv, [(cx + bx * u * 1.3, cy + by * u * 1.3) for (bx, by) in bolt], CARD)   # contorno
+            paint_poly(cv, [(cx + bx * u, cy + by * u) for (bx, by) in bolt], FG)
+
+    def _hide_batt_popup(_e=None):
+        tw = batt_win[0]
+        if batt_after[0] is not None:
+            try: root.after_cancel(batt_after[0])
+            except Exception: pass
+            batt_after[0] = None
+        if tw is not None and tw.winfo_exists():
+            tw.withdraw()
+
+    def show_batt_popup(pct, chg, kind):
+        """kind: 'open' | 'low' | 'full'."""
+        tw = batt_win[0]
+        if tw is None or not tw.winfo_exists():
+            tw = tk.Toplevel(root)
+            tw.overrideredirect(True)
+            tw.attributes("-topmost", True)
+            tw.configure(bg=T["POPUP_BORDER"])
+            card = tk.Frame(tw, bg=CARD); card.pack(padx=1, pady=1)
+            hdr = tk.Frame(card, bg=CARD); hdr.pack(fill="x", padx=px(16), pady=(px(12), 0))
+            hcv = tk.Canvas(hdr, width=px(14), height=px(14), bg=CARD, highlightthickness=0)
+            hcv.pack(side="left"); draw_mouse(hcv, px(7), px(7), px(14), FG2)
+            tk.Label(hdr, text=APP_NAME, bg=CARD, fg=FG2, font=FONT_DESC).pack(side="left", padx=(px(8), 0))
+            body = tk.Frame(card, bg=CARD); body.pack(fill="x", padx=px(16), pady=(px(12), px(14)))
+            bcv = tk.Canvas(body, width=px(60), height=px(30), bg=CARD, highlightthickness=0)
+            bcv.pack(side="left", padx=(0, px(14)))
+            txt = tk.Frame(body, bg=CARD); txt.pack(side="left", fill="x", expand=True)
+            big = tk.Label(txt, bg=CARD, fg=FG, font=FONT_BIG, anchor="w"); big.pack(anchor="w")
+            sub = tk.Label(txt, bg=CARD, fg=FG2, font=FONT_ROW, anchor="w", justify="left",
+                           wraplength=px(205)); sub.pack(anchor="w")
+            note = tk.Label(txt, bg=CARD, fg=FG3, font=FONT_DESC, anchor="w", justify="left",
+                            wraplength=px(205)); note.pack(anchor="w")
+            bar = tk.Canvas(card, height=px(4), width=px(320), bg=CARD, highlightthickness=0)
+            bar.pack(fill="x")
+            for w_ in (tw, card, hdr, hcv, body, bcv, txt, big, sub, note, bar):
+                w_.bind("<Button-1>", _hide_batt_popup)
+            tw._parts = (bcv, big, sub, note, bar); batt_win[0] = tw
+            tw.update_idletasks(); round_corners(tw)
+        bcv, big, sub, note, bar = tw._parts
+        if kind == "full":
+            col, s1, s2 = ACCENT, tr("ba_full"), tr("ba_full_sub")
+        else:
+            col = ACCENT if pct > 20 else (WARN_BATT if pct > 10 else LOW_BATT)
+            if chg:
+                col = ACCENT
+            s1 = tr("ba_level") if (pct > 20 or chg) else (tr("ba_low") if pct > 10 else tr("ba_crit"))
+            s2 = tr("ba_charging") if chg else ""
+        big.configure(text=f"{pct} %", fg=(FG if (chg or pct > 10) else LOW_BATT))
+        sub.configure(text=s1); note.configure(text=s2)
+        if s2:
+            note.pack(anchor="w")
+        else:
+            note.pack_forget()
+        bcv.delete("all"); draw_battery(bcv, px(2), px(3), px(54), px(24), pct, col, chg)
+        bar.delete("all")
+        W = px(320)
+        bar.create_rectangle(0, 0, W, px(4), outline="", fill=SEG_OFF)
+        bar.create_rectangle(0, 0, int(W * max(0, min(100, pct)) / 100.0), px(4), outline="", fill=col)
+        tw.update_idletasks()
+        w, h = tw.winfo_reqwidth(), tw.winfo_reqheight()
+        sw = tw.winfo_screenwidth()
+        tw.geometry(f"+{sw - w - 28}+{px(48)}")           # esquina superior derecha
+        tw.deiconify(); tw.lift()
+        if batt_after[0] is not None:
+            try: root.after_cancel(batt_after[0])
+            except Exception: pass
+        batt_after[0] = root.after(9000 if (pct <= 20 and not chg) else 6000, _hide_batt_popup)
+
+    def evaluate_battery(pct, chg):
+        """Se llama tras cada lectura de bateria y decide si hay que avisar."""
+        if not batt_supported[0]:
+            return
+        first = batt_first[0]; batt_first[0] = False
+        kind, new = battery_alert_step(pct, chg, batt_alerted, first)
+        batt_alerted.clear(); batt_alerted.update(new)
+        if kind == "open" and RESTARTED:            # reinicio para el tema: no repetir el aviso
+            kind = None
+        full, batt_full_done[0] = battery_full_step(pct, chg, batt_full_done[0])
+        if full and batt_full_var.get():
+            show_batt_popup(pct, chg, "full"); return
+        if kind and batt_alert_var.get():
+            if kind == "low":
+                log(trl("log_batt_alert", pct=pct))
+            show_batt_popup(pct, chg, "low" if kind == "low" else "open")
+
+    def test_batt_popup():
+        if batt_supported[0] and state_batt[0] is not None:
+            pct, chg = state_batt[0]
+        else:
+            pct, chg = 42, False
+        show_batt_popup(pct, chg, "open")
+
     # al salir del programa (aunque sea por un error), devolver el raton a su
     # modo normal para no dejar su boton de perfil "muerto"
     import atexit
     atexit.register(lambda: release_control(announce=False))
 
     # =====================================================================
-    # 8) PESTANA ILUMINACION
+    # 8) ILUMINACION (todo se aplica al momento: sin botones "Aplicar")
     # =====================================================================
-    reg_text(ttk.Label(tab_led, style="H.TLabel"), "led_color_hdr").pack(anchor="w", padx=12, pady=(12, 2))
-
+    pg_led = new_page("lighting")
+    page_title(pg_led, "nav_lighting")
     led_color = [list(presets.get("led_color", [0, 255, 0]))]
-    led_on = [True]
+    led_on = [bool(presets.get("led_on", True))]
+    led_var = tk.BooleanVar(value=led_on[0])         # interruptor <-> led_on
 
     def _hex(rgb):
         return "#%02x%02x%02x" % (rgb[0] & 0xFF, rgb[1] & 0xFF, rgb[2] & 0xFF)
 
-    srow = ttk.Frame(tab_led); srow.pack(fill="x", padx=12, pady=2)
-    swatch = tk.Label(srow, width=8, height=2, bg=_hex(led_color[0]), relief="flat",
-                      bd=0, highlightthickness=1, highlightbackground=BORDER)
-    swatch.pack(side="left")
+    c = Card(pg_led, icon="power", title="led_title", desc="led_desc")
+    c.frame.pack_configure(pady=(px(8), px(2)))
+    Toggle(c.ctrl, led_var).frame.pack()
+
+    group_hdr(pg_led, "color_hdr")
+    col_stack = stack(pg_led)
+    c = Card(col_stack, icon="color", title="color_cur", desc="color_cur_desc", wrap=320)
+    swatch = tk.Canvas(c.ctrl, width=px(32), height=px(32), bg=CARD, highlightthickness=0,
+                       cursor="hand2")
+    swatch.pack(side="left", padx=(0, px(10)))
     hex_var = tk.StringVar(value=_hex(led_color[0]))
-    ttk.Entry(srow, textvariable=hex_var, width=10).pack(side="left", padx=8)
-    ttk.Label(srow, text="(#RRGGBB)", style="Muted.TLabel").pack(side="left")
+    hex_lbl = tk.Label(c.ctrl, textvariable=hex_var, bg=CARD, fg=FG2, font=FONT_LOG, width=8, anchor="w")
+    hex_lbl.pack(side="left", padx=(0, px(10)))
+    pick_btn = ttk.Button(c.ctrl, style="Btn.TButton", command=lambda: open_color_picker())
+    reg_text(pick_btn, "color_pick_btn").pack(side="left")
+    swatch.bind("<Button-1>", lambda _e: open_color_picker())
+
+    def _draw_swatch():
+        swatch.delete("all")
+        paint(swatch, "box", 0, 0, px(32), px(32), fill=_hex(led_color[0]), outline=T["SWATCH_BORDER"],
+              width=1, r=px(4))
 
     def render_onoff():
-        onoff_btn.configure(text=tr("btn_led_off") if led_on[0] else tr("btn_led_on"))
+        if led_var.get() != led_on[0]:
+            led_var.set(led_on[0])
 
     @guard
     def apply_color(rgb=None):
@@ -2529,52 +4759,340 @@ def run_gui():
                 raise ValueError(tr("err_hex"))
             rgb = [int(t[0:2], 16), int(t[2:4], 16), int(t[4:6], 16)]
         led_color[0] = list(rgb); led_on[0] = True
-        swatch.configure(bg=_hex(rgb)); hex_var.set(_hex(rgb))
-        presets["led_color"] = list(rgb); save_presets(presets)
+        hex_var.set(_hex(rgb)); _draw_swatch(); _draw_palette()
+        presets["led_color"] = list(rgb); presets["led_on"] = True; save_presets(presets)
         mouse.set_color(*rgb)
         render_onoff()
-        log(tr("log_color", hex=_hex(rgb)))
+        log(trl("log_color", hex=_hex(rgb)))
 
-    # paleta rapida: (clave_i18n, color RGB)
+    # --- selector de color: disco (tono + saturacion) y barra de brillo ---------
+    # El disco es siempre un circulo (es una rueda de color, no una pieza del
+    # tema). Se dibuja una vez con Pillow en modo HSV y se guarda en cache.
+    import colorsys
+
+    def _disc_photo(D):
+        key = ("disc", D)
+        hit = _paint_cache.get(key)
+        if hit is not None:
+            return hit
+        if not PAINT_OK:
+            return None
+        import io
+        N = D * 2                                          # supermuestreo del borde
+        hue = _PImage.new("L", (N, N), 0)
+        dh = _PDraw.Draw(hue)
+        for a in range(360):                               # angulo en sentido horario = tono
+            dh.pieslice((0, 0, N - 1, N - 1), a, a + 1.6, fill=int(a / 360.0 * 255))
+        sat = _PImage.radial_gradient("L").point(lambda v: min(255, int(v * 181 / 128.0))).resize((N, N))
+        val = _PImage.new("L", (N, N), 255)
+        img = _PImage.merge("HSV", (hue, sat, val)).convert("RGBA")
+        m = _PImage.new("L", (N, N), 0)
+        _PDraw.Draw(m).ellipse((0, 0, N - 1, N - 1), fill=255)
+        img.putalpha(m)
+        img = img.resize((D, D), _PImage.LANCZOS)
+        buf = io.BytesIO(); img.save(buf, "PNG")
+        ph = tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii"))
+        _paint_cache[key] = ph
+        return ph
+
+    def _bar_photo(W, H, h, s_):
+        """Barra de brillo: de negro al color elegido (tono h, saturacion s_)."""
+        key = ("vbar", W, H, round(h, 3), round(s_, 3), SHAPE.get("style"))
+        hit = _paint_cache.get(key)
+        if hit is not None:
+            return hit
+        if not PAINT_OK:
+            return None
+        import io
+        row = _PImage.new("RGB", (256, 1))
+        row.putdata([tuple(int(c_ * 255) for c_ in colorsys.hsv_to_rgb(h, s_, v / 255.0)) for v in range(256)])
+        img = row.resize((W, H)).convert("RGBA")
+        img.putalpha(_mask("pill", W, H, 0, 0, W, H, 0).resize((W, H), _PImage.LANCZOS))
+        buf = io.BytesIO(); img.save(buf, "PNG")
+        ph = tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii"))
+        for k_ in [k_ for k_ in _paint_cache if isinstance(k_, tuple) and k_ and k_[0] == "vbar"]:
+            del _paint_cache[k_]                       # solo hace falta la barra del color actual
+        _paint_cache[key] = ph
+        return ph
+
+    picker_win = [None]
+
+    def open_color_picker():
+        """Ventana para elegir el color del LED: disco + brillo + codigo hex
+        (editable en los dos sentidos). 'Aplicar' lo manda al raton."""
+        if picker_win[0] is not None and picker_win[0].winfo_exists():
+            picker_win[0].lift(); return
+        r0, g0, b0 = led_color[0]
+        hsv = list(colorsys.rgb_to_hsv(r0 / 255.0, g0 / 255.0, b0 / 255.0))   # [h, s, v] 0..1
+        win = tk.Toplevel(root); win.configure(bg=BG); win.resizable(False, False)
+        win.title(tr("picker_title")); win.transient(root)
+        picker_win[0] = win
+        try:
+            if os.path.exists(_ico_path): win.iconbitmap(_ico_path)
+        except Exception: pass
+        D, BW, BH = px(220), px(220), px(14)
+        DP = px(9)                                         # margen para que el marcador no se corte
+        top = tk.Frame(win, bg=CARD); top.pack(fill="x")
+        ti = tk.Frame(top, bg=CARD); ti.pack(fill="x", padx=px(24), pady=px(22))
+        tk.Label(ti, text=tr("picker_title"), bg=CARD, fg=FG, font=FONT_BIG, anchor="w").pack(fill="x")
+        body = tk.Frame(ti, bg=CARD); body.pack(fill="x", pady=(px(16), 0))
+        left = tk.Frame(body, bg=CARD); left.pack(side="left", anchor="n")
+        disc = tk.Canvas(left, width=D + 2 * DP, height=D + 2 * DP, bg=CARD, highlightthickness=0,
+                         cursor="crosshair")
+        disc.pack()
+        tk.Label(left, text=tr("picker_bright"), bg=CARD, fg=FG2, font=FONT_DESC, anchor="w").pack(
+            fill="x", pady=(px(14), px(4)))
+        bar = tk.Canvas(left, width=BW, height=BH + px(8), bg=CARD, highlightthickness=0, cursor="hand2")
+        bar.pack(padx=DP)
+        right = tk.Frame(body, bg=CARD); right.pack(side="left", anchor="n", padx=(px(24), 0), fill="y")
+        prev = tk.Canvas(right, width=px(120), height=px(64), bg=CARD, highlightthickness=0)
+        prev.pack(anchor="w")
+        lab = tk.Frame(right, bg=CARD); lab.pack(fill="x", pady=(px(4), 0))
+        tk.Label(lab, text=tr("picker_new"), bg=CARD, fg=FG2, font=FONT_DESC).pack(side="left")
+        tk.Label(lab, text=tr("picker_cur"), bg=CARD, fg=FG3, font=FONT_DESC).pack(side="right")
+        tk.Label(right, text="Hex", bg=CARD, fg=FG2, font=FONT_DESC, anchor="w").pack(
+            fill="x", pady=(px(18), px(4)))
+        pk_hex = tk.StringVar(value=_hex(led_color[0]))
+        hb, he = text_box(right, pk_hex, 120)
+        hb.pack(anchor="w")
+        note = tk.Label(right, text=tr("picker_note"), bg=CARD, fg=FG3, font=FONT_DESC,
+                        justify="left", anchor="w", wraplength=px(150))
+        note.pack(fill="x", pady=(px(14), 0))
+        foot = tk.Frame(win, bg=BG); foot.pack(fill="x")
+        tk.Frame(foot, bg=CARD_BORDER, height=1).pack(fill="x")
+        fi = tk.Frame(foot, bg=BG); fi.pack(fill="x", padx=px(24), pady=px(18))
+        fi.grid_columnconfigure(0, weight=1, uniform="b"); fi.grid_columnconfigure(1, weight=1, uniform="b")
+        busy = [False]
+
+        def cur_rgb():
+            return [int(round(c_ * 255)) for c_ in colorsys.hsv_to_rgb(*hsv)]
+
+        def redraw(sync_hex=True):
+            disc.delete("all")
+            ph = _disc_photo(D)
+            if ph is not None:
+                disc.create_image(DP, DP, image=ph, anchor="nw")
+            else:
+                disc.create_oval(DP, DP, DP + D - 1, DP + D - 1, fill=CTRL, outline=CTRL_BORDER)
+            R = D / 2.0
+            a = math.radians(hsv[0] * 360.0)
+            mx = DP + R + hsv[1] * (R - px(2)) * math.cos(a)
+            my = DP + R + hsv[1] * (R - px(2)) * math.sin(a)
+            k = px(7)
+            paint(disc, "dot", mx - k - 1, my - k - 1, mx + k + 1, my + k + 1, outline="#000000", width=1)
+            paint(disc, "dot", mx - k, my - k, mx + k, my + k, outline="#FFFFFF", width=max(2, px(2)))
+            bar.delete("all")
+            y0 = px(4)
+            bp = _bar_photo(BW, BH, hsv[0], hsv[1])
+            if bp is not None:
+                bar.create_image(0, y0, image=bp, anchor="nw")
+            else:
+                bar.create_rectangle(0, y0, BW, y0 + BH, fill=_hex(cur_rgb()), outline="")
+            kx = px(7) + hsv[2] * (BW - px(14))
+            kr = px(9)
+            paint(bar, "dot", kx - kr, y0 + BH / 2.0 - kr, kx + kr, y0 + BH / 2.0 + kr,
+                  fill=_hex(cur_rgb()), outline="#FFFFFF", width=max(2, px(2)))
+            prev.delete("all")
+            half = px(60)
+            paint(prev, "box", 0, 0, half, px(64), fill=_hex(cur_rgb()), r=px(4))
+            paint(prev, "box", half, 0, px(120), px(64), fill=_hex(led_color[0]), r=px(4))
+            if sync_hex:
+                busy[0] = True; pk_hex.set(_hex(cur_rgb())); busy[0] = False
+
+        def on_disc(e):
+            R = D / 2.0
+            dx, dy = e.x - DP - R, e.y - DP - R
+            hsv[0] = (math.degrees(math.atan2(dy, dx)) % 360.0) / 360.0
+            sat = min(1.0, math.hypot(dx, dy) / (R - px(2)))
+            hsv[1] = 0.0 if sat < 0.04 else (1.0 if sat > 0.96 else sat)   # iman al centro y al borde
+            if hsv[2] < 0.05:
+                hsv[2] = 1.0                               # si estaba en negro, que se vea el color
+            redraw()
+
+        def on_bar(e):
+            hsv[2] = max(0.0, min(1.0, (e.x - px(7)) / float(max(1, BW - px(14)))))
+            redraw()
+
+        def on_hex(*_):
+            if busy[0]:
+                return
+            t = pk_hex.get().strip().lstrip("#")
+            if re.fullmatch(r"[0-9A-Fa-f]{6}", t):
+                r_, g_, b_ = int(t[0:2], 16), int(t[2:4], 16), int(t[4:6], 16)
+                hsv[:] = list(colorsys.rgb_to_hsv(r_ / 255.0, g_ / 255.0, b_ / 255.0))
+                redraw(sync_hex=False)
+
+        def close(_e=None):
+            picker_win[0] = None
+            try: win.grab_release()
+            except Exception: pass
+            win.destroy()
+
+        def ok(_e=None):
+            rgb = cur_rgb()
+            close()
+            apply_color(rgb)
+
+        for ev in ("<Button-1>", "<B1-Motion>"):
+            disc.bind(ev, on_disc); bar.bind(ev, on_bar)
+        pk_hex.trace_add("write", on_hex)
+        he.bind("<Return>", ok)
+        win.bind("<Escape>", close)
+        b_ok = ttk.Button(fi, style="Accent.TButton", text=tr("btn_apply"), command=ok)
+        b_ok.grid(row=0, column=0, sticky="ew", padx=(0, px(4)))
+        ttk.Button(fi, style="Btn.TButton", text=tr("btn_cancel"), command=close).grid(
+            row=0, column=1, sticky="ew", padx=(px(4), 0))
+        win.protocol("WM_DELETE_WINDOW", close)
+        redraw()
+        win.update_idletasks()
+        win.geometry(f"+{root.winfo_rootx() + px(160)}+{root.winfo_rooty() + px(80)}")
+        dark_titlebar(win)
+        try: win.grab_set()
+        except Exception: pass
+        return win
+
+    # paleta rapida: colores puros que se mandan al LED (no se tocan)
     palette = [("col_red", [255, 0, 0]), ("col_green", [0, 255, 0]),
                ("col_blue", [0, 80, 255]), ("col_cyan", [0, 255, 255]),
                ("col_magenta", [255, 0, 255]), ("col_yellow", [255, 190, 0]),
                ("col_white", [255, 255, 255])]
-    prow_c = ttk.Frame(tab_led); prow_c.pack(fill="x", padx=12, pady=2)
-    for _key, _rgb in palette:
-        reg_text(ttk.Button(prow_c, width=6, command=lambda c=_rgb: apply_color(c)),
-                 _key).pack(side="left", padx=1, pady=1)
+    c = Card(col_stack, title="color_quick", indent=True)
+    pal_cv = tk.Canvas(c.ctrl, width=px(7 * 26 + 6 * 6 + 8), height=px(34), bg=CARD, highlightthickness=0)
+    pal_cv.pack()
 
-    reg_text(ttk.Button(tab_led, command=lambda: apply_color()), "btn_apply_color").pack(fill="x", padx=12, pady=(2, 8))
+    def _draw_palette():
+        pal_cv.delete("all")
+        for k, (_key, rgb) in enumerate(palette):
+            x = px(4) + k * px(32); y = px(4)
+            if list(rgb) == list(led_color[0]):
+                paint(pal_cv, "box", x - px(3), y - px(3), x + px(29), y + px(29),
+                      outline=FG, width=px(2), r=px(6))
+            paint(pal_cv, "box", x, y, x + px(26), y + px(26), fill=_hex(rgb), r=px(4))
 
-    # ---- Intensidad -----------------------------------------------------
-    reg_text(ttk.Label(tab_led, style="H.TLabel"), "led_bright_hdr").pack(anchor="w", padx=12, pady=(6, 2))
+    def _pal_click(e):
+        k = int((e.x - px(4)) // px(32))
+        if 0 <= k < len(palette):
+            apply_color(palette[k][1])
+    pal_cv.bind("<Button-1>", _pal_click)
+    pal_cv.configure(cursor="hand2")
+    _draw_swatch(); _draw_palette()
+
+    group_hdr(pg_led, "bright_hdr")
+    c = Card(pg_led, icon="bright", title="bright_title")
     bright_var = tk.IntVar(value=presets.get("led_bright", 100))
-    brow_l = ttk.Frame(tab_led); brow_l.pack(fill="x", padx=12)
-    bscale = ttk.Scale(brow_l, from_=0, to=100, orient="horizontal",
-                       command=lambda v: bright_var.set(int(float(v))))
-    bscale.set(bright_var.get()); bscale.pack(side="left", fill="x", expand=True)
-    ttk.Label(brow_l, textvariable=bright_var, width=4).pack(side="left")
-    ttk.Label(brow_l, text="%").pack(side="left")
 
     @guard
     def apply_bright():
         mouse.set_brightness(bright_var.get())
         presets["led_bright"] = bright_var.get(); save_presets(presets)
-        log(tr("log_bright", v=bright_var.get()))
-    reg_text(ttk.Button(tab_led, command=apply_bright), "btn_apply_bright").pack(fill="x", padx=12, pady=(2, 8))
+        log(trl("log_bright", v=bright_var.get()))
+    Slider(c.ctrl, bright_var, 0, 100, 220, on_release=apply_bright).cv.pack(side="left")
+    bval = tk.Label(c.ctrl, bg=CARD, fg=FG, font=FONT_ROW, width=5, anchor="e")
+    bval.pack(side="left", padx=(px(8), 0))
+    bright_var.trace_add("write", lambda *_: bval.configure(text=f"{bright_var.get()} %"))
+    bval.configure(text=f"{bright_var.get()} %")
 
-    # ---- Encender / apagar (un solo boton) -----------------------------
     @guard
     def toggle_led():
         if led_on[0]:
-            mouse.set_light_off(); led_on[0] = False; log(tr("log_led_off"))
+            mouse.set_light_off(); led_on[0] = False; log(trl("log_led_off"))
         else:
-            mouse.set_color(*led_color[0]); led_on[0] = True; log(tr("log_led_on"))
+            mouse.set_color(*led_color[0]); led_on[0] = True; log(trl("log_led_on"))
+        presets["led_on"] = led_on[0]; save_presets(presets)
         render_onoff()
-    onoff_btn = ttk.Button(tab_led, command=toggle_led)
-    onoff_btn.pack(fill="x", padx=12, pady=(10, 6))
-    reg(render_onoff)
+
+    def _led_switch(*_):
+        if led_var.get() != led_on[0]:           # lo ha movido el usuario
+            toggle_led()
+            if led_var.get() != led_on[0]:       # no se pudo: el interruptor vuelve
+                led_var.set(led_on[0])
+    led_var.trace_add("write", _led_switch)
+
+    # ---- parpadeo del logo al cambiar de perfil -------------------------------------
+    # Tres pulsos con el color del perfil ("tin tin tin", como un intermitente) y el
+    # LED vuelve a como estaba. Usa NOSTORE (no graba en la memoria del raton). Como
+    # el raton no permite LEER el color actual, solo se parpadea si el programa SABE
+    # como esta el LED (lo aplico el usuario alguna vez); si no, al terminar no
+    # sabriamos dejarlo como estaba.
+    group_hdr(pg_led, "grp_blink")
+    blink_var = tk.BooleanVar(value=presets.get("profile_blink", True))
+
+    def _save_blink(*_):
+        presets["profile_blink"] = blink_var.get(); save_presets(presets)
+    blink_var.trace_add("write", _save_blink)
+    blink_q = queue.Queue()
+    blink_gen = [0]
+    blink_ok = [True]
+    blink_warned = [False]
+
+    c = Card(pg_led, icon="lighting", title="blink_title", desc="blink_desc")
+    reg_text(ttk.Button(c.ctrl, style="Btn.TButton",
+                        command=lambda: blink_for(current[0] if current[0] is not None else 0, force=True),
+                        width=8),
+             "blink_test").pack(side="left", padx=(0, px(12)))
+    Toggle(c.ctrl, blink_var).frame.pack(side="left")
+
+    def _rgb_of(h):
+        return [int(h[k:k + 2], 16) for k in (1, 3, 5)]
+
+    def blink_for(i, force=False):
+        """Pide un parpadeo con el color del perfil i (si procede)."""
+        if i is None or mouse.dev is None or wizard_active[0] or not blink_ok[0]:
+            return
+        if not (force or blink_var.get()) or bright_var.get() <= 0:
+            return
+        if "led_on" not in presets:
+            if not blink_warned[0]:
+                blink_warned[0] = True
+                log(trl("log_blink_unknown"))
+            return
+        blink_gen[0] += 1
+        blink_q.put((blink_gen[0], i))
+
+    def _restore_led():
+        if led_on[0]:
+            mouse.set_color(*led_color[0], store=False)
+        else:
+            mouse.set_light_off(store=False)
+
+    def _blink_worker():
+        while True:
+            job = blink_q.get()
+            if job is None:
+                return
+            while not blink_q.empty():              # solo importa la peticion mas reciente
+                nxt = blink_q.get_nowait()
+                if nxt is None:
+                    return
+                job = nxt
+            gen, i = job
+            rgb = _rgb_of(PROFILE_COLORS[i])
+            started = False
+
+            def _accepted(r):
+                """El raton contesta con un estado: 3 = fallo, 5 = no soportado."""
+                code = r[0] if isinstance(r, (bytes, bytearray)) else r
+                return code not in (0x03, 0x05)
+            try:
+                for _ in range(3):
+                    if gen != blink_gen[0]:
+                        break
+                    if not _accepted(mouse.set_color(*rgb, store=False)):
+                        raise RuntimeError("NOSTORE rechazado")
+                    started = True
+                    time.sleep(0.14)
+                    mouse.set_color(0, 0, 0, store=False)
+                    time.sleep(0.10)
+            except Exception:
+                if not started:
+                    blink_ok[0] = False             # el LED no admite colores temporales
+                    uiq.put(lambda: log(trl("log_blink_fail")))
+            finally:
+                if started and gen == blink_gen[0]:  # si viene otro parpadeo, el restaura al final
+                    try:
+                        _restore_led()
+                    except Exception:
+                        pass
 
     # =====================================================================
     # 9) BUCLE AUTOMATICO (cada 1,5 s)
@@ -2607,14 +5125,83 @@ def run_gui():
             ctrl_on[0] = False
             on_disconnected()
 
+    # --- hilo de E/S: las lecturas periodicas no congelan la ventana -----------
+    # Hablar con el raton tarda (cada orden espera su respuesta, y si el
+    # receptor esta ocupado reintenta). Antes se hacia en el hilo de la ventana
+    # y la congelaba 0,1-0,7 s cada 3 s. Ahora un hilo hace la lectura y deja el
+    # resultado en `uiq`; la decision se toma en el hilo de Tk.
+    io_q = queue.Queue()
+    io_busy = [False]
+
+    def io_submit(fn, done):
+        """Encola una lectura. done(estado, resultado) se llama en el hilo de Tk
+        con estado 'ok' | 'busy' (raton dormido/ocupado) | 'err'. Solo una
+        lectura a la vez: si ya hay una en marcha, devuelve False."""
+        if io_busy[0]:
+            return False
+        io_busy[0] = True
+        io_q.put((fn, done))
+        return True
+
+    def _io_worker():
+        while True:
+            job = io_q.get()
+            if job is None:
+                return
+            fn, done = job
+            try:
+                res = ("ok", fn())
+            except MouseBusy as e:
+                res = ("busy", e)
+            except Exception as e:
+                res = ("err", e)
+
+            def fin(res=res, done=done):
+                io_busy[0] = False
+                done(*res)
+            uiq.put(fin)
+
+    def _mode_done(st, res):
+        if not ctrl_on[0] or mouse.dev is None or wizard_active[0]:
+            return
+        if st == "busy":
+            return                                     # dormido / ocupado: se mira en el siguiente
+        if st == "err":
+            _read_fail(); return
+        read_fails[0] = 0
+        mode, x = res
+        if mode != RazerMouse.MODE_DRIVER:
+            log(trl("log_ctrl_reapply"))
+            try: mouse.set_device_mode(RazerMouse.MODE_DRIVER)
+            except Exception: pass
+            apply_profile(current[0], announce=False)
+        elif (current[0] is not None and profiles[current[0]]
+              and x != profiles[current[0]] and not sniper_state["active"]):
+            apply_profile(current[0], announce=False)
+
+    def _compat_done(st, res):
+        if ctrl_on[0] or mouse.dev is None or wizard_active[0] or sniper_state["active"]:
+            return
+        if st == "busy":
+            return                                     # dormido / ocupado: no es desconexion
+        if st == "err":
+            _read_fail(); return
+        read_fails[0] = 0
+        changed = compat_process(res)
+        sync_entries()
+        if changed is not None:
+            if notify_var.get():
+                show_toast(changed)
+            blink_for(changed)
+
     def auto_tick():
         try:
             now = time.time()
             if wizard_active[0]:
                 pass                                   # el asistente manda: no tocar el raton
             elif mouse.dev is None:
-                if now - last_conn_try[0] >= RECONNECT_S:
-                    connect_mouse(manual=False)
+                if now - last_conn_try[0] >= RECONNECT_S and not io_busy[0]:
+                    connect_async()
             elif ctrl_on[0]:
                 if verify_deadline[0] and not _window_active():
                     verify_deadline[0] += POLL_MS / 1000.0   # la cuenta atras solo corre con la ventana visible
@@ -2623,39 +5210,17 @@ def run_gui():
                 elif listener[0] is not None and not listener[0].alive():
                     fall_back("log_ctrl_fail")
                 elif now - last_mode_check[0] >= MODE_CHECK_S:
-                    last_mode_check[0] = now
-                    try:
-                        mode = mouse.get_device_mode()
-                        x, _ = mouse.get_dpi()
-                    except Exception:
-                        _read_fail()
-                    else:
-                        read_fails[0] = 0
-                        if mode != RazerMouse.MODE_DRIVER:
-                            log(tr("log_ctrl_reapply"))
-                            try: mouse.set_device_mode(RazerMouse.MODE_DRIVER)
-                            except Exception: pass
-                            apply_profile(current[0], announce=False)
-                        elif current[0] is not None and profiles[current[0]] and x != profiles[current[0]]:
-                            apply_profile(current[0], announce=False)
+                    if io_submit(lambda: (mouse.get_device_mode(), mouse.get_dpi()[0]), _mode_done):
+                        last_mode_check[0] = now
             else:
                 notify_on = notify_var.get()
-                if notify_on or _window_active():
-                    try:
-                        x, _ = mouse.get_dpi()
-                        if x <= 0:
-                            raise RuntimeError("DPI 0")
-                    except Exception:
-                        _read_fail()
-                    else:
-                        read_fails[0] = 0
-                        changed = compat_process(x)
-                        sync_entries()
-                        if changed is not None and notify_on:
-                            show_toast(changed)
-            if mouse.dev is not None and _window_active() and now - last_batt[0] >= BATT_S:
-                last_batt[0] = now
-                refresh_battery()
+                if not sniper_state["active"] and (notify_on or _window_active()):
+                    io_submit(lambda: mouse.get_dpi()[0], _compat_done)
+            need_batt = _window_active() or batt_alert_var.get() or batt_full_var.get()
+            if (mouse.dev is not None and not wizard_active[0] and need_batt
+                    and now - last_batt[0] >= BATT_S):
+                if refresh_battery_async():
+                    last_batt[0] = now
         except Exception as e:
             log(f"[ERROR] {e}")
         finally:
@@ -2664,9 +5229,9 @@ def run_gui():
     root.after(POLL_MS, auto_tick)
 
     # =====================================================================
-    # 9b) PESTANA OPCIONES: bandeja, arranque con Windows, actualizaciones,
-    #     reporte de errores. Los hilos secundarios (red, bandeja) NUNCA tocan
-    #     widgets: dejan funciones en `uiq` y el hilo de Tk las ejecuta (pump_ui).
+    # 9b) AJUSTES: bandeja, arranque con Windows, idioma, actualizaciones.
+    #     Los hilos secundarios (red, bandeja) NUNCA tocan widgets: dejan
+    #     funciones en `uiq` y el hilo de Tk las ejecuta (pump_ui).
     # =====================================================================
     uiq = queue.Queue()
 
@@ -2713,17 +5278,38 @@ def run_gui():
         try: root.focus_force()
         except Exception: pass
 
-    def quit_app():
+    def quit_app(then=None):
         if tray[0] is not None:
             try: tray[0].stop()
             except Exception: pass
             tray[0] = None
+        try: intro.stop()                   # la musica del modo Mediavida
+        except Exception: pass
         try: remapper.stop()                # quita el gancho de Windows
         except Exception: pass
+        blink_q.put(None); sniper_q.put(None); io_q.put(None); dpi_q.put(None)   # paran los hilos auxiliares
         release_control(announce=False)     # el raton vuelve a su modo normal
         try: mouse.close()
         except Exception: pass
+        if then is not None:
+            try: then()
+            except Exception: pass
         root.destroy()
+
+    def restart_app():
+        """Cierra limpio y vuelve a abrir el programa (para aplicar el tema)."""
+        def _relaunch():
+            release_single_instance()
+            if getattr(sys, "frozen", False):
+                args = [sys.executable]
+            else:
+                args = [sys.executable, os.path.abspath(__file__)]
+            env = dict(os.environ)
+            env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"   # .exe de PyInstaller: proceso nuevo e independiente
+            env.pop("_MEIPASS2", None)
+            subprocess.Popen(args + ["--restarted"], close_fds=True, env=env)
+        log(trl("log_restart"))
+        quit_app(then=_relaunch)
 
     def request_quit():
         """Al cerrar: si hay perfiles sin grabar en el raton, ofrece grabarlos
@@ -2743,31 +5329,50 @@ def run_gui():
         if not TRAY_OK or tray[0] is not None:
             return
         root.withdraw()
+        def _profile_action(k):
+            # pystray exige exactamente (icon, item): sin argumentos por defecto
+            return lambda icon, item: uiq.put(lambda: on_click_profile(k))
+
+        def _profile_items():
+            for k in _enabled():
+                yield pystray.MenuItem(
+                    lambda item, k=k: f"{tr('profile')} {k + 1} · {profiles[k]} DPI",
+                    _profile_action(k),
+                    checked=lambda item, k=k: current[0] == k,
+                    radio=True,
+                    enabled=lambda item: bool(ctrl_on[0]))       # solo en modo control
+
         menu = pystray.Menu(
-            pystray.MenuItem(tr("tray_show"), lambda i, it: uiq.put(show_window), default=True),
-            pystray.MenuItem(tr("tray_quit"), lambda i, it: uiq.put(request_quit)),
+            pystray.MenuItem(lambda item: tray_status() or APP_NAME, None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(lambda item: tr("tray_profiles"), pystray.Menu(_profile_items)),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(lambda item: tr("tray_show"), lambda i, it: uiq.put(show_window), default=True),
+            pystray.MenuItem(lambda item: tr("tray_quit"), lambda i, it: uiq.put(request_quit)),
         )
-        icon = pystray.Icon(APP_NAME, _tray_image(), f"{APP_NAME} v{APP_VERSION}", menu)
+        icon = pystray.Icon(APP_NAME, _tray_image(), tray_tip(), menu)
         tray[0] = icon
         icon.run_detached()                      # corre en su propio hilo
-        log(tr("log_tray"))
+        log(trl("log_tray"))
 
+    _tray_ok_after = [time.time() + 4.0]      # nunca a la bandeja durante el arranque
     def on_unmap(e):
+        if time.time() < _tray_ok_after[0]:
+            return
         # los bindings de la ventana raiz tambien reciben eventos de sus hijos:
         # solo nos interesa cuando se minimiza la ventana principal
         if e.widget is root and tray_var.get() and TRAY_OK:
             root.after(10, lambda: root.state() == "iconic" and to_tray())
     root.bind("<Unmap>", on_unmap, add="+")
 
-    reg_text(ttk.Label(tab_opts, style="H.TLabel"), "sys_hdr").pack(anchor="w", padx=12, pady=(12, 2))
+    group_hdr(pg_set, "grp_system")
+    set_sys = stack(pg_set)
     tray_var = tk.BooleanVar(value=bool(presets.get("tray", False)) and TRAY_OK)
     def _save_tray(*_):
         presets["tray"] = tray_var.get(); save_presets(presets)
     tray_var.trace_add("write", _save_tray)
-    tray_chk = ttk.Checkbutton(tab_opts, variable=tray_var,
-                               state=("normal" if TRAY_OK else "disabled"))
-    tray_chk.pack(anchor="w", padx=12)
-    reg(lambda: tray_chk.configure(text=tr("opt_tray" if TRAY_OK else "opt_tray_na")))
+    c = Card(set_sys, icon="monitor", title="tray_title", desc=("tray_desc" if TRAY_OK else "opt_tray_na"))
+    Toggle(c.ctrl, tray_var, enabled=TRAY_OK).frame.pack()
 
     # --- arranque con Windows ---------------------------------------------
     AUTOSTART_OK = autostart_supported()
@@ -2779,53 +5384,55 @@ def run_gui():
         want = autostart_var.get()
         try:
             set_autostart(want)
-            log(tr("log_autostart_on" if want else "log_autostart_off"))
+            log(trl("log_autostart_on" if want else "log_autostart_off"))
         except Exception as e:
-            log(tr("log_autostart_err", e=e))
+            log(trl("log_autostart_err", e=e))
             _autostart_busy[0] = True            # revierte la casilla sin re-disparar
             autostart_var.set(not want)
             _autostart_busy[0] = False
     autostart_var.trace_add("write", _toggle_autostart)
-    auto_chk = ttk.Checkbutton(tab_opts, variable=autostart_var,
-                               state=("normal" if AUTOSTART_OK else "disabled"))
-    auto_chk.pack(anchor="w", padx=12)
-    reg(lambda: auto_chk.configure(text=tr("opt_autostart" if AUTOSTART_OK else "opt_autostart_na")))
 
-    ttk.Separator(tab_opts).pack(fill="x", padx=12, pady=8)
+    c = Card(set_sys, icon="power", title="autostart_title",
+             desc=("autostart_desc" if AUTOSTART_OK else "autostart_desc_na"))
+    Toggle(c.ctrl, autostart_var, enabled=AUTOSTART_OK).frame.pack()
 
     # --- actualizaciones ---------------------------------------------------
-    reg_text(ttk.Label(tab_opts, style="H.TLabel"), "upd_hdr").pack(anchor="w", padx=12, pady=(0, 2))
+    group_hdr(pg_set, "grp_updates")
+    set_upd = stack(pg_set)
+    upd_card = Card(set_upd, icon="refresh", title=None, desc=None, wrap=250)
+    upd_btn = ttk.Button(upd_card.ctrl, style="Btn.TButton", command=lambda: check_updates(True))
+    upd_btn.pack(side="left")
+    install_btn = ttk.Button(upd_card.ctrl, style="Accent.TButton", command=lambda: install_update())
+    reg(lambda: (upd_btn.configure(text=tr("upd_check_btn")), install_btn.configure(text=tr("btn_install_upd"))))
+
     upd_start_var = tk.BooleanVar(value=presets.get("check_updates", True))
     def _save_upd(*_):
         presets["check_updates"] = upd_start_var.get(); save_presets(presets)
     upd_start_var.trace_add("write", _save_upd)
-    reg_text(ttk.Checkbutton(tab_opts, variable=upd_start_var), "opt_upd_start").pack(anchor="w", padx=12)
+    c = Card(set_upd, icon="sync", title="upd_start_title", desc="upd_start_desc")
+    Toggle(c.ctrl, upd_start_var).frame.pack()
 
     # estado de la comprobacion (para repintar al cambiar de idioma):
     #   ("idle",) ("checking",) ("latest",) ("err",) ("new", tag, page, exe_url) ("dl", tag)
     state_upd = [("idle",)]
-    upd_var = tk.StringVar()
-    upd_lbl = ttk.Label(tab_opts, textvariable=upd_var, style="Muted.TLabel")
-    upd_lbl.pack(anchor="w", padx=12, pady=(4, 2))
 
     def render_upd():
-        st = state_upd[0]
-        if st[0] == "checking":
-            upd_var.set(tr("upd_checking")); upd_lbl.configure(style="Muted.TLabel")
-        elif st[0] == "latest":
-            upd_var.set(tr("upd_latest", v=APP_VERSION)); upd_lbl.configure(style="Muted.TLabel")
-        elif st[0] == "err":
-            upd_var.set(tr("upd_err")); upd_lbl.configure(style="Muted.TLabel")
-        elif st[0] == "new":
-            upd_var.set(tr("upd_new", tag=st[1])); upd_lbl.configure(style="Active.TLabel")
-        elif st[0] == "dl":
-            upd_var.set(tr("upd_downloading", tag=st[1])); upd_lbl.configure(style="Muted.TLabel")
+        st_ = state_upd[0]
+        titles = {"checking": tr("updt_checking"), "latest": tr("updt_latest"), "err": tr("updt_err")}
+        if st_[0] == "new":
+            t = tr("updt_new", tag=st_[1])
+        elif st_[0] == "dl":
+            t = tr("updt_dl", tag=st_[1])
         else:
-            upd_var.set(tr("upd_idle", v=APP_VERSION)); upd_lbl.configure(style="Muted.TLabel")
-        try:
-            install_btn.configure(state=("normal" if st[0] == "new" else "disabled"))
-        except NameError:
-            pass
+            t = titles.get(st_[0], tr("updt_idle"))
+        upd_card.title.configure(text=t, fg=(T["LINK"] if st_[0] == "new" else FG))
+        upd_card.set_desc(tr("about_ver", v=APP_VERSION))
+        if st_[0] == "new":
+            if not install_btn.winfo_ismapped():
+                install_btn.pack(side="left", padx=(px(8), 0))
+        else:
+            install_btn.pack_forget()
+        upd_btn.state(["disabled"] if st_[0] in ("checking", "dl") else ["!disabled"])
     reg(render_upd)
 
     def check_updates(manual=False):
@@ -2844,19 +5451,19 @@ def run_gui():
     def _upd_result(tag, page, exe_url, manual):
         if parse_version(tag) > parse_version(APP_VERSION):
             state_upd[0] = ("new", tag, page, exe_url); render_upd()
-            log(tr("log_upd_new", tag=tag, v=APP_VERSION))
+            log(trl("log_upd_new", tag=tag, v=APP_VERSION))
             if manual:
                 install_update()
         else:
             state_upd[0] = ("latest",); render_upd()
             if manual:
-                log(tr("log_upd_latest", v=APP_VERSION))
+                log(trl("log_upd_latest", v=APP_VERSION))
                 messagebox.showinfo(tr("dlg_uptodate_title"), tr("dlg_uptodate_msg", v=APP_VERSION))
 
     def _upd_error(e, manual):
         state_upd[0] = ("err",); render_upd()
         if manual:
-            log(tr("log_upd_err", e=e))
+            log(trl("log_upd_err", e=e))
 
     def install_update():
         """Descarga el .exe nuevo junto al actual (sin borrar el viejo) y ofrece
@@ -2868,7 +5475,7 @@ def run_gui():
         if not getattr(sys, "frozen", False) or not exe_url:
             messagebox.showinfo(tr("dlg_upd_title"), tr("dlg_upd_script"))
             try: webbrowser.open_new(page)
-            except Exception as e: log(tr("log_browser_err", e=e))
+            except Exception as e: log(trl("log_browser_err", e=e))
             return
         if not messagebox.askyesno(tr("dlg_upd_title"), tr("dlg_upd_msg", tag=tag, v=APP_VERSION)):
             return
@@ -2886,28 +5493,22 @@ def run_gui():
 
     def _upd_downloaded(dest, prev_state):
         state_upd[0] = prev_state; render_upd()
-        log(tr("log_upd_saved", path=dest))
+        log(trl("log_upd_saved", path=dest))
         if messagebox.askyesno(tr("dlg_upd_done_title"), tr("dlg_upd_done_msg", path=dest)):
             try:
                 release_single_instance()   # si no, la nueva creeria que ya hay una abierta
-                subprocess.Popen([dest], close_fds=True)
+                env = dict(os.environ)
+                env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"   # la nueva arranca como proceso independiente
+                env.pop("_MEIPASS2", None)
+                subprocess.Popen([dest], close_fds=True, env=env)
                 quit_app()
             except Exception as e:
-                log(tr("log_upd_dl_err", e=e))
+                log(trl("log_upd_dl_err", e=e))
 
     def _upd_dl_error(e, prev_state):
         state_upd[0] = prev_state; render_upd()
-        log(tr("log_upd_dl_err", e=e))
+        log(trl("log_upd_dl_err", e=e))
 
-    ubtns = ttk.Frame(tab_opts); ubtns.pack(fill="x", padx=12, pady=(2, 4))
-    reg_text(ttk.Button(ubtns, command=lambda: check_updates(True)), "btn_check_upd").pack(
-        side="left", expand=True, fill="x", padx=(0, 4))
-    install_btn = ttk.Button(ubtns, command=install_update, state="disabled")
-    install_btn.pack(side="left", expand=True, fill="x", padx=(4, 0))
-    reg(lambda: install_btn.configure(text=tr("btn_install_upd")))
-    render_upd()
-
-    # --- reportar errores (enlace fijo abajo a la derecha) --------------------- ----------------------------------------------------
     def report_bug(_e=None):
         """Abre un 'issue' nuevo en GitHub con los datos tecnicos ya rellenos
         (version, sistema, modelo, firmware y las ultimas lineas del log).
@@ -2928,61 +5529,225 @@ def run_gui():
             "**Last log lines**\n```\n" + "\n".join(tail) + "\n```\n"
         )
         url = ISSUES_URL + "?" + urllib.parse.urlencode({"title": "[Bug] ", "body": body[:6000]})
-        log(tr("log_bug_opened"))
+        log(trl("log_bug_opened"))
         try: webbrowser.open_new(url)
-        except Exception as e: log(tr("log_browser_err", e=e))
-
+        except Exception as e: log(trl("log_browser_err", e=e))
 
     # =====================================================================
-    # 10) LOG + DONACION (Ko-fi) + REPORTAR ERROR
+    # 10) ACERCA DE  y  acciones del Registro
     # =====================================================================
-    ttk.Separator(root).pack(fill="x", padx=12, pady=(2, 4))
-    reg_text(ttk.Label(root, style="Muted.TLabel"), "log_lbl").pack(anchor="w", padx=14)
-    logbox = tk.Text(root, height=5, width=54, state="disabled", bg=LOGBG, fg=LOGFG,
-                     font=("Consolas", 9), relief="flat", highlightthickness=0, bd=0, padx=8, pady=6,
-                     wrap="word")
-    logbox.pack(fill="x", expand=False, padx=12, pady=(4, 8))
-
     def open_kofi(_e=None):
         try: webbrowser.open_new(KOFI_URL)
-        except Exception as e: log(tr("log_browser_err", e=e))
+        except Exception as e: log(trl("log_browser_err", e=e))
 
-    ttk.Separator(root).pack(fill="x", padx=12, pady=(2, 4))
-    foot = ttk.Frame(root); foot.pack(fill="x", padx=12, pady=(0, 8))
-    kofi_link = tk.Label(foot, bg=BG, fg=MUTED, cursor="hand2",
-                         font=("Segoe UI", 9, "underline"))
-    kofi_link.pack(side="left")
-    kofi_link.bind("<Button-1>", open_kofi)
-    kofi_link.bind("<Enter>", lambda _e: kofi_link.configure(fg=ACCENT2))
-    kofi_link.bind("<Leave>", lambda _e: kofi_link.configure(fg=MUTED))
-    reg(lambda: kofi_link.configure(text=tr("kofi_link")))
+    def open_url(u):
+        try: webbrowser.open_new(u)
+        except Exception as e: log(trl("log_browser_err", e=e))
 
-    bug_link = tk.Label(foot, bg=BG, fg=MUTED, cursor="hand2",
-                        font=("Segoe UI", 9, "underline"))
-    bug_link.pack(side="right")
-    bug_link.bind("<Button-1>", report_bug)
-    bug_link.bind("<Enter>", lambda _e: bug_link.configure(fg=ACCENT2))
-    bug_link.bind("<Leave>", lambda _e: bug_link.configure(fg=MUTED))
-    reg(lambda: bug_link.configure(text=tr("bug_link")))
+    def copy_log():
+        root.clipboard_clear(); root.clipboard_append(logbox.get("1.0", "end").rstrip())
+        log(trl("log_copied"))
 
-    # mensajes iniciales del log (en el idioma activo)
-    # instrucciones iniciales: siempre en ingles (lo que venga despues sigue
-    # el idioma elegido)
+    reg_text(ttk.Button(log_actions, style="Btn.TButton", command=copy_log), "btn_copy").pack(side="left")
+    reg_text(ttk.Button(log_actions, style="Btn.TButton", command=report_bug),
+             "btn_report_plain").pack(side="left", padx=(px(8), 0))
+    reg_text(log_note, "report_desc")
+
+    pg_about = new_page("about")
+    page_title(pg_about, "nav_about")
+    ab = tk.Frame(pg_about, bg=CARD, highlightthickness=1, highlightbackground=CARD_BORDER)
+    ab.pack(fill="x", pady=(px(8), 0))
+    abi = tk.Frame(ab, bg=CARD); abi.pack(fill="x", padx=px(16), pady=px(16))
+    ab_head = tk.Frame(abi, bg=CARD); ab_head.pack(anchor="w")
+    ab_logo = tk.Canvas(ab_head, width=px(48), height=px(48), bg=CARD, highlightthickness=0)
+    ab_logo.pack(side="left", padx=(0, px(16)))
+    paint(ab_logo, "box", 0, 0, px(48), px(48), fill=CTRL, r=px(6))
+    draw_mouse(ab_logo, px(24), px(24), px(32), ACCENT)
+    ab_names = tk.Frame(ab_head, bg=CARD); ab_names.pack(side="left")
+    tk.Label(ab_names, text=APP_NAME, bg=CARD, fg=FG, font=FONT_BIG, anchor="w").pack(anchor="w")
+    reg_text(tk.Label(ab_names, bg=CARD, fg=FG2, font=FONT_DESC, anchor="w"), "about_ver",
+             v=APP_VERSION).pack(anchor="w")
+    ab_desc = tk.Label(abi, bg=CARD, fg=FG2, font=FONT_ROW, anchor="w", justify="left",
+                       wraplength=px(520))
+    reg_text(ab_desc, "about_app_desc").pack(anchor="w", pady=(px(14), 0))
+    autowrap(ab_desc, abi, 0, lo=240, hi=820)
+
+    group_hdr(pg_about, "why_hdr")
+    why = tk.Frame(pg_about, bg=CARD, highlightthickness=1, highlightbackground=CARD_BORDER)
+    why.pack(fill="x")
+    why_lbl = tk.Label(why, bg=CARD, fg=FG2, font=FONT_ROW, anchor="w", justify="left",
+                       wraplength=px(530))
+    reg_text(why_lbl, "about_text").pack(fill="x", padx=px(16), pady=px(14))
+    autowrap(why_lbl, why, 32, lo=240, hi=820)
+
+    group_hdr(pg_about, "links_hdr")
+    links = stack(pg_about)
+
+    def link_row(parent, title_key, desc, url, title_text=None):
+        c = Card(parent, icon=None, title=title_key, desc=None, wrap=440)
+        if title_text: c.title.configure(text=title_text)
+        if desc: reg(lambda: c.set_desc(tr(desc)))
+        ic = icon_label(c.ctrl, "open", 16, FG2)
+        if ic: ic.pack()
+        parts = [c.frame, c.inner, c.title, c.desc, c.ctrl] + ([ic] if ic else []) + list(c.title.master.winfo_children())
+        def hov(on):
+            col = CTRL_HOVER if on else CARD
+            for w in parts + [c.title.master]:
+                try: w.configure(bg=col)
+                except Exception: pass
+        for w in parts + [c.title.master]:
+            w.configure(cursor="hand2")
+            w.bind("<Enter>", lambda _e: hov(True)); w.bind("<Leave>", lambda _e: hov(False))
+            w.bind("<Button-1>", lambda _e: open_url(url))
+        return c
+    _repo_short = REPO_URL.replace("https://", "")
+    c = link_row(links, "link_repo", None, REPO_URL); c.set_desc(_repo_short)
+    link_row(links, None, "link_openrazer_desc", "https://github.com/openrazer/openrazer", title_text="OpenRazer")
+    link_row(links, None, "link_kofi_desc", KOFI_URL, title_text="Spot me a protein scoop")
+
+    group_hdr(pg_about, "license_hdr")
+    Card(pg_about, icon="doc", title="license_title", desc="license_desc", wrap=480)
+
+    def info_dialog(title, sub, items, btn_text):
+        """Dialogo informativo sencillo (bienvenida / novedades), no bloquea."""
+        win = tk.Toplevel(root); win.configure(bg=BG); win.resizable(False, False)
+        win.title(APP_NAME); win.transient(root)
+        try:
+            if os.path.exists(_ico_path): win.iconbitmap(_ico_path)
+        except Exception: pass
+        W = px(480)
+        top = tk.Frame(win, bg=CARD); top.pack(fill="x")
+        ti = tk.Frame(top, bg=CARD); ti.pack(fill="x", padx=px(24), pady=px(24))
+        head = tk.Frame(ti, bg=CARD); head.pack(fill="x")
+        cv = tk.Canvas(head, width=px(48), height=px(48), bg=CARD, highlightthickness=0)
+        cv.pack(side="left", padx=(0, px(14))); draw_mouse(cv, px(24), px(24), px(44), ACCENT)
+        tt = tk.Frame(head, bg=CARD); tt.pack(side="left", fill="x")
+        tk.Label(tt, text=title, bg=CARD, fg=FG, font=FONT_BIG, anchor="w").pack(anchor="w")
+        if sub:
+            tk.Label(tt, text=sub, bg=CARD, fg=FG2, font=FONT_DESC, anchor="w").pack(anchor="w")
+        body = tk.Frame(ti, bg=CARD); body.pack(fill="x", pady=(px(18), 0))
+        for t in items:
+            row = tk.Frame(body, bg=CARD); row.pack(fill="x", pady=(0, px(9)))
+            dot = tk.Canvas(row, width=px(8), height=px(8), bg=CARD, highlightthickness=0)
+            dot.pack(side="left", anchor="n", padx=(0, px(12)), pady=(px(6), 0))
+            paint(dot, "dot", 0, 0, px(8), px(8), fill=ACCENT)
+            tk.Label(row, text=t, bg=CARD, fg=FG, font=FONT_ROW, anchor="w", justify="left",
+                     wraplength=W - px(48) - px(22)).pack(side="left", fill="x", expand=True)
+        foot = tk.Frame(win, bg=BG); foot.pack(fill="x")
+        tk.Frame(foot, bg=CARD_BORDER, height=1).pack(fill="x")
+        fi = tk.Frame(foot, bg=BG); fi.pack(fill="x", padx=px(24), pady=px(20))
+        ttk.Button(fi, text=btn_text, style="Accent.TButton", command=win.destroy).pack(fill="x")
+        win.update_idletasks()
+        h = win.winfo_reqheight()
+        x = root.winfo_rootx() + max(0, (root.winfo_width() - W) // 2)
+        y = root.winfo_rooty() + max(0, (root.winfo_height() - h) // 3)
+        win.geometry(f"{W}x{h}+{x}+{y}")
+        dark_titlebar(win)
+        return win
+
+    def show_welcome():
+        return info_dialog(tr("wl_title"), tr("wl_sub"), [tr("wl_1"), tr("wl_2"), tr("wl_3")], tr("wl_btn"))
+
+    def show_whats_new():
+        items = WHATS_NEW.get(APP_VERSION, {}).get(lang[0]) or WHATS_NEW.get(APP_VERSION, {}).get("en")
+        if not items:
+            return None
+        return info_dialog(tr("wn_title", v=APP_VERSION), "", items, tr("btn_close"))
+
+    wn_card = Card(pg_about, icon="sync", title="wn_link", desc="wn_desc")
+    reg_text(ttk.Button(wn_card.ctrl, style="Btn.TButton", command=show_whats_new), "wn_show").pack()
+
+    # mensajes iniciales del log: siempre en ingles (lo que venga despues
+    # sigue el idioma elegido)
     log("Welcome! Close Razer Synapse and plug in your mouse.")
-    log("While open, the app runs your profiles: switch them")
-    log("with the mouse's profile button, edit them here.")
+    log("While open, the app runs your profiles: switch them with the mouse's profile button and edit them here.")
+    for _te in theme_errors:
+        log("[!] " + _te)
+    if THEME_NAME.startswith("user:"):
+        log(f"Theme: {theme_label(THEME_NAME)} ({THEME_MODE})")
 
     # =====================================================================
-    # 11) TAMANO FIJO: medir el contenido y bloquear la ventana a ese tamano
+    # 11) TAMANO: por defecto mas grande, redimensionable y con memoria
+    #     (el contenido se recoloca solo: las tarjetas reajustan sus textos y
+    #     cada pagina muestra una barra de desplazamiento si no cabe).
     # =====================================================================
-    root.update_idletasks()
-    root.geometry(f"{max(480, root.winfo_reqwidth())}x{root.winfo_reqheight()}")
-    root.resizable(False, False)
+    _sw, _sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    MIN_W, MIN_H = px(800), px(640 if MV_ACTIVE else 600)   # una entrada mas en la barra
+    root.minsize(min(MIN_W, _sw), min(MIN_H, _sh))
+    _wa_h = _sh - px(70)                  # alto util aproximado (sin barra de tareas)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes as _wt
+            _r = _wt.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(_r), 0):   # SPI_GETWORKAREA
+                _wa_h = _r.bottom - _r.top
+        except Exception:
+            pass
+    # lo mas alto que quepa (hasta 900 px) para que casi ninguna pagina necesite scroll
+    DEF_W, DEF_H = min(px(1120), _sw - px(60)), min(px(900), _wa_h - px(40))
+
+    def _initial_geometry():
+        w, h = DEF_W, DEF_H
+        x, y = (_sw - w) // 2, max(0, (_sh - h) // 3)
+        g = presets.get("win_geom")
+        try:
+            gw, gh, gx, gy = [int(v) for v in g]
+            if MIN_W <= gw <= _sw and MIN_H <= gh <= _sh:
+                w, h = gw, gh
+                # que la ventana quede a la vista (un monitor puede haber desaparecido)
+                if -w + px(120) < gx < _sw - px(120) and 0 <= gy < _sh - px(80):
+                    x, y = gx, gy
+        except Exception:
+            pass
+        return f"{w}x{h}+{x}+{y}"
+
+    root.geometry(_initial_geometry())
+    root.resizable(True, True)
+    _geom_job = [None]
+
+    def _save_geom():
+        _geom_job[0] = None
+        try:
+            if root.state() != "normal":
+                return
+            presets["win_geom"] = [root.winfo_width(), root.winfo_height(), root.winfo_x(), root.winfo_y()]
+            save_presets(presets)
+        except Exception:
+            pass
+
+    def _on_root_cfg(e):
+        if e.widget is not root:
+            return
+        if _geom_job[0] is not None:
+            try: root.after_cancel(_geom_job[0])
+            except Exception: pass
+        _geom_job[0] = root.after(700, _save_geom)
+    root.bind("<Configure>", _on_root_cfg, add="+")
+    show_page(presets.get("last_page", "profiles") if presets.get("last_page") in PAGES else "profiles")
+    root.deiconify()
+    dark_titlebar(root)
 
     # =====================================================================
     # 12) ARRANQUE
     # =====================================================================
     root.after(150, pump_ui)                     # ejecuta lo que dejan los hilos
+    threading.Thread(target=_blink_worker, daemon=True).start()     # parpadeo del logo
+    threading.Thread(target=_io_worker, daemon=True).start()        # lecturas periodicas
+    threading.Thread(target=_dpi_worker, daemon=True).start()       # cambios de DPI
+    threading.Thread(target=_sniper_worker, daemon=True).start()    # sniper
+
+    def _startup_dialogs():
+        """Primera vez: bienvenida. Tras actualizar: novedades. Una sola vez."""
+        if "--minimized" in sys.argv:             # arranque con Windows: no molestar
+            return
+        if first_run and not presets.get("welcomed"):
+            presets["welcomed"] = True; presets["last_version"] = APP_VERSION; save_presets(presets)
+            show_welcome()
+        elif presets.get("last_version") != APP_VERSION:
+            presets["last_version"] = APP_VERSION; save_presets(presets)
+            show_whats_new()
+    root.after(1200, _startup_dialogs)
     root.protocol("WM_DELETE_WINDOW", request_quit)  # pregunta si grabar y cierra limpio
 
     # si el arranque con Windows esta activo, refresca la ruta (por si el .exe
@@ -3001,7 +5766,107 @@ def run_gui():
         else:
             root.iconify()
 
-    root.after(300, lambda: connect_mouse(manual=False))   # conexion automatica
+    root.after(300, connect_async)                    # conexion automatica (sin congelar)
+
+    # =====================================================================
+    # 13) MODO MEDIAVIDA (secreto)
+    #     Codigo Konami con la ventana en primer plano -> se desbloquea y se
+    #     pone el tema "Mediavida" y el programa se reinicia para aplicarlo.
+    #     Al volver suena la intro y sale el aviso. No se conecta a nada: el
+    #     logo y la musica van dentro del programa. Se quita eligiendo otro
+    #     tema en Ajustes.
+    # =====================================================================
+    intro = IntroSound()
+    konami = KonamiDetector()
+    mv_dialog = [None]
+    mv_going = [False]                                 # ya se esta reiniciando
+
+    def open_mv_unlocked():
+        """Aviso de 'modo desbloqueado' con los colores del foro."""
+        if mv_dialog[0] is not None and mv_dialog[0].winfo_exists():
+            mv_dialog[0].lift(); return mv_dialog[0]
+        C = _MV_PAL
+        st.configure("MVA.TButton", background=C["ACCENT"], foreground=C["ON_ACCENT"], bordercolor=C["ACCENT"],
+                     lightcolor=C["ACCENT"], darkcolor=C["ACCENT"], relief="flat", padding=(px(12), px(5)),
+                     font=FONT_ROW, focuscolor=C["ACCENT"])
+        st.map("MVA.TButton", background=[("active", C["ACCENT_HOVER"])],
+               lightcolor=[("active", C["ACCENT_HOVER"])], darkcolor=[("active", C["ACCENT_HOVER"])],
+               bordercolor=[("active", C["ACCENT_HOVER"])])
+        win = tk.Toplevel(root); win.configure(bg=C["BG"]); win.resizable(False, False)
+        win.title(APP_NAME); win.transient(root); mv_dialog[0] = win
+        try:
+            if os.path.exists(_ico_path): win.iconbitmap(_ico_path)
+        except Exception: pass
+        W = px(440)
+        top = tk.Frame(win, bg=C["CARD"]); top.pack(fill="x")
+        ti = tk.Frame(top, bg=C["CARD"]); ti.pack(fill="x", padx=px(24), pady=px(24))
+        cv = tk.Canvas(ti, width=px(64), height=px(64), bg=C["CARD"], highlightthickness=0)
+        cv.pack(side="left", padx=(0, px(18)))
+        fr = image_frames(MV_LOGO, px(64), radius=px(14))
+        if fr:
+            cv._img = fr[0][0]; cv.create_image(0, 0, image=fr[0][0], anchor="nw")
+        tt = tk.Frame(ti, bg=C["CARD"]); tt.pack(side="left", fill="x")
+        tk.Label(tt, text=tr("mv_unl_title"), bg=C["CARD"], fg=C["FG"], font=FONT_BIG, anchor="w").pack(anchor="w")
+        tk.Label(tt, text=tr("mv_unl_sub"), bg=C["CARD"], fg=C["FG2"], font=FONT_DESC, anchor="w",
+                 justify="left", wraplength=W - px(130)).pack(anchor="w", pady=(px(2), 0))
+        foot = tk.Frame(win, bg=C["BG"]); foot.pack(fill="x")
+        tk.Frame(foot, bg=C["SELECT_BG"], height=1).pack(fill="x")
+        fi = tk.Frame(foot, bg=C["BG"]); fi.pack(fill="x", padx=px(24), pady=px(18))
+
+        def close(_e=None):
+            mv_dialog[0] = None
+            try: win.grab_release()
+            except Exception: pass
+            try: win.destroy()
+            except Exception: pass
+        b_ok = ttk.Button(fi, style="MVA.TButton", text=tr("mv_unl_ok"), command=close)
+        b_ok.pack(side="right")
+        win.bind("<Escape>", close); win.bind("<Return>", close); win.protocol("WM_DELETE_WINDOW", close)
+        win.update_idletasks()
+        W = max(W, win.winfo_reqwidth())
+        win.geometry(f"{W}x{win.winfo_reqheight()}+{root.winfo_rootx() + px(170)}+{root.winfo_rooty() + px(110)}")
+        try:                                         # barra de titulo oscura, como el foro
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+            v = ctypes.c_int(1)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(v), 4)
+            col = ctypes.c_int(0x00090A0B)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(col), 4)
+        except Exception:
+            pass
+        try: win.grab_set()
+        except Exception: pass
+        b_ok.focus_set()
+        return win
+
+    def _konami_key(e):
+        if not konami.feed(getattr(e, "keysym", "")):
+            return
+        if MV_ACTIVE:                                  # ya esta puesto: solo la musiquilla
+            intro.play(resource("mv_intro.mp3")); return
+        if mv_going[0] or wizard_active[0]:            # nunca a mitad de grabar en el raton
+            return
+        mv_going[0] = True
+        presets.update({"mv_unlocked": True, "theme": "mediavida", "theme_mode": "dark",
+                        "mv_welcome": True})
+        save_presets(presets)
+        log(trl("log_mv_on"))
+        restart_app()                                  # el tema se aplica al arrancar
+    root.bind_all("<KeyPress>", _konami_key, add="+")
+
+    if MV_ACTIVE and presets.pop("mv_welcome", None):  # recien desbloqueado: intro + aviso
+        save_presets(presets)
+
+        def _mv_welcome():
+            show_window()
+            intro.play(resource("mv_intro.mp3"))
+            open_mv_unlocked()
+        root.after(700, _mv_welcome)
+    elif presets.pop("mv_welcome", None):              # (por si quedo puesto sin el tema)
+        save_presets(presets)
+
+    if os.environ.get("NSM_TEST_API"):               # solo para las pruebas automaticas
+        globals()["_TEST_API"] = dict(locals())
 
     root.mainloop()
 
